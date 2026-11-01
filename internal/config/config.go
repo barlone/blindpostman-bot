@@ -19,7 +19,10 @@ const DefaultPath = "config.ini"
 
 type Config struct {
 	TelegramToken string
-	DatabaseURL   string
+	// DeveloperID — Telegram ID пользователя, для которого в логике бота действуют исключения.
+	// 0 — такого пользователя нет.
+	DeveloperID int64
+	DatabaseURL string
 	// SharedSecret — общий секрет бота и регистрирующей службы для подписи ссылок /start.
 	SharedSecret []byte
 	// APIKey — ключ доступа службы к REST API (заголовок Authorization: Bearer <key>).
@@ -61,6 +64,7 @@ func Load(path string) (Config, error) {
 	r := &reader{ini: ini}
 	c := Config{
 		TelegramToken: r.required("telegram", "bot_token"),
+		DeveloperID:   int64(r.integer("telegram", "developer_id", 0)),
 		DatabaseURL:   r.databaseURL(),
 		SharedSecret:  []byte(r.required("connect", "link_shared_secret")),
 		APIKey:        r.required("config", "api_token"),

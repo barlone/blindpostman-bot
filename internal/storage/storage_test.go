@@ -366,6 +366,28 @@ func TestRegisterKeepsManualRecipient(t *testing.T) {
 	}
 }
 
+func TestAddRecipient(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	sub, err := s.AddRecipient(ctx, Profile{TelegramID: 1, Username: "dev"}, "developer")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sub.Status != StatusActive || sub.Username != "dev" || sub.Token == uuid.Nil {
+		t.Fatalf("added %+v", sub)
+	}
+
+	var mode string
+	if err := s.pool.QueryRow(ctx, `SELECT details->>'mode' FROM events
+		WHERE subscriber_id = $1 AND kind = 'registered'`, sub.ID).Scan(&mode); err != nil {
+		t.Fatal(err)
+	}
+	if mode != "developer" {
+		t.Errorf("event mode %q", mode)
+	}
+}
+
 func TestSubscribersMergeIntoRecipients(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()

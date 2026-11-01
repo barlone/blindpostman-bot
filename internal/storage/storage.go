@@ -105,19 +105,9 @@ func (s *Store) Register(ctx context.Context, r Registration) (Subscriber, error
 	}
 	defer tx.Rollback(ctx)
 
-	sub, err := scanSubscriber(tx.QueryRow(ctx, `
-		INSERT INTO recipients (tg_id, username, first_name, last_name, token)
-		VALUES ($1, $2, $3, $4, $5)
-		ON CONFLICT (tg_id) DO UPDATE SET
-			username   = EXCLUDED.username,
-			first_name = EXCLUDED.first_name,
-			last_name  = EXCLUDED.last_name,
-			status     = 'active',
-			updated_at = now()
-		RETURNING `+subscriberColumns,
-		r.TelegramID, r.Username, r.FirstName, r.LastName, uuid.New()))
+	sub, err := upsertRecipient(ctx, tx, r.Profile)
 	if err != nil {
-		return Subscriber{}, fmt.Errorf("storage: upsert subscriber: %w", err)
+		return Subscriber{}, err
 	}
 
 	tag, err := tx.Exec(ctx, `
@@ -149,6 +139,43 @@ func (s *Store) Register(ctx context.Context, r Registration) (Subscriber, error
 		return Subscriber{}, err
 	}
 	return sub, tx.Commit(ctx)
+}
+
+// AddRecipient добавляет получателя без ссылки регистрации. Токен и псевдоним существующего
+// получателя не меняются. mode попадает в журнал событий.
+func (s *Store) AddRecipient(ctx context.Context, p Profile, mode string) (Subscriber, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return Subscriber{}, err
+	}
+	defer tx.Rollback(ctx)
+
+	sub, err := upsertRecipient(ctx, tx, p)
+	if err != nil {
+		return Subscriber{}, err
+	}
+	if err := addEvent(ctx, tx, sub.ID, "registered", map[string]any{"mode": mode}); err != nil {
+		return Subscriber{}, err
+	}
+	return sub, tx.Commit(ctx)
+}
+
+func upsertRecipient(ctx context.Context, tx pgx.Tx, p Profile) (Subscriber, error) {
+	sub, err := scanSubscriber(tx.QueryRow(ctx, `
+		INSERT INTO recipients (tg_id, username, first_name, last_name, token)
+		VALUES ($1, $2, $3, $4, $5)
+		ON CONFLICT (tg_id) DO UPDATE SET
+			username   = EXCLUDED.username,
+			first_name = EXCLUDED.first_name,
+			last_name  = EXCLUDED.last_name,
+			status     = 'active',
+			updated_at = now()
+		RETURNING `+subscriberColumns,
+		p.TelegramID, p.Username, p.FirstName, p.LastName, uuid.New()))
+	if err != nil {
+		return Subscriber{}, fmt.Errorf("storage: upsert subscriber: %w", err)
+	}
+	return sub, nil
 }
 
 // HashCallbackCode — в БД хранится только хеш одноразового кода.

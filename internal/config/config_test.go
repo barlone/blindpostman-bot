@@ -20,6 +20,7 @@ api_token=0123456789abcdef
 
 [telegram]
 bot_token=123:abc
+developer_id=5000000000
 global_rate=20.5
 chat_interval=2s
 
@@ -67,6 +68,9 @@ func TestLoad(t *testing.T) {
 	if c.LinkTTL != 2*time.Hour || c.MessageTTL != 30*time.Minute {
 		t.Errorf("ttl: link %v, message %v", c.LinkTTL, c.MessageTTL)
 	}
+	if c.DeveloperID != 5000000000 {
+		t.Errorf("developer id %d", c.DeveloperID)
+	}
 	want := Queue{Workers: 4, MaxAttempts: 7, GlobalRate: 20.5, ChatInterval: 2 * time.Second, PollInterval: 500 * time.Millisecond}
 	if c.Queue != want {
 		t.Errorf("queue %+v, want %+v", c.Queue, want)
@@ -101,7 +105,7 @@ link_shared_secret=`+testSecret+`
 		t.Fatal(err)
 	}
 	if c.HTTPAddr != ":8080" || c.LinkTTL != 24*time.Hour || c.MessageTTL != time.Hour ||
-		c.CallbackTTL != 10*time.Minute || c.CallbackURL != "" {
+		c.CallbackTTL != 10*time.Minute || c.CallbackURL != "" || c.DeveloperID != 0 {
 		t.Errorf("unexpected defaults: %+v", c)
 	}
 	if want := "postgres://postman:plain@localhost:5432/postman?sslmode=disable"; c.DatabaseURL != want {
@@ -134,6 +138,7 @@ func TestLoadErrors(t *testing.T) {
 		{"short api token", strings.Replace(validINI("x"), "api_token=0123456789abcdef", "api_token=short", 1), "api_token must be at least"},
 		{"bad duration", strings.Replace(validINI("x"), "link_ttl=2h", "link_ttl=soon", 1), "[connect] link_ttl"},
 		{"bad workers", strings.Replace(validINI("x"), "queue_workers=4", "queue_workers=-1", 1), "[send-queue] queue_workers"},
+		{"bad developer id", strings.Replace(validINI("x"), "developer_id=5000000000", "developer_id=dima", 1), "[telegram] developer_id"},
 		{"bad port", strings.Replace(validINI("x"), "port = 35437", "port = 70000", 1), "port out of range"},
 		{"bad password", validINI(bad), "password: cannot decrypt"},
 		{"not ini", "just some text", "line 1"},

@@ -36,8 +36,17 @@ func (e *RateLimitError) Error() string {
 	return fmt.Sprintf("tgbot: rate limited, retry after %s", e.RetryAfter)
 }
 
+// Store — часть хранилища, нужная боту.
+type Store interface {
+	Register(ctx context.Context, r storage.Registration) (storage.Subscriber, error)
+	AddRecipient(ctx context.Context, p storage.Profile, mode string) (storage.Subscriber, error)
+	SubscriberByTelegramID(ctx context.Context, telegramID int64) (storage.Subscriber, error)
+	SetStatus(ctx context.Context, subscriberID int64, status, reason string) error
+}
+
 type Config struct {
 	Token       string
+	DeveloperID int64 // 0 — пользователя-исключения нет
 	Secret      []byte
 	CallbackURL string // пустой — режим callback отключён
 	CallbackTTL time.Duration
@@ -45,7 +54,8 @@ type Config struct {
 
 type Service struct {
 	bot         *bot.Bot
-	store       *storage.Store
+	store       Store
+	developerID int64
 	secret      []byte
 	callbackURL *url.URL
 	callbackTTL time.Duration
@@ -53,9 +63,10 @@ type Service struct {
 	log         *slog.Logger
 }
 
-func New(ctx context.Context, cfg Config, store *storage.Store, log *slog.Logger) (*Service, error) {
+func New(ctx context.Context, cfg Config, store Store, log *slog.Logger) (*Service, error) {
 	s := &Service{
 		store:       store,
+		developerID: cfg.DeveloperID,
 		secret:      cfg.Secret,
 		callbackTTL: cfg.CallbackTTL,
 		log:         log.With("component", "tgbot"),
@@ -216,9 +227,7 @@ func (s *Service) onStart(ctx context.Context, _ *bot.Bot, u *models.Update) {
 
 	switch p.Mode {
 	case startlink.ModeToken:
-		s.replyHTML(ctx, msg.Chat.ID, fmt.Sprintf(
-			"Вы подписаны на уведомления.\n\nВаш токен авторизации:\n<code>%s</code>\n\n"+
-				"Скопируйте его и укажите в сервисе.", sub.Token))
+		s.replyToken(ctx, msg.Chat.ID, sub)
 	case startlink.ModeCallback:
 		link := s.callbackLink(code)
 		s.replyHTML(ctx, msg.Chat.ID, fmt.Sprintf(
@@ -228,10 +237,21 @@ func (s *Service) onStart(ctx context.Context, _ *bot.Bot, u *models.Update) {
 	}
 }
 
-// resume обрабатывает /start без параметра: реактивирует существующую подписку.
+func (s *Service) replyToken(ctx context.Context, chatID int64, sub storage.Subscriber) {
+	s.replyHTML(ctx, chatID, fmt.Sprintf(
+		"Вы подписаны на уведомления.\n\nВаш токен авторизации:\n<code>%s</code>\n\n"+
+			"Скопируйте его и укажите в сервисе.", sub.Token))
+}
+
+// resume обрабатывает /start без параметра: реактивирует существующую подписку,
+// а разработчика добавляет в список получателей.
 func (s *Service) resume(ctx context.Context, msg *models.Message) {
 	sub, err := s.store.SubscriberByTelegramID(ctx, msg.From.ID)
 	if errors.Is(err, storage.ErrNotFound) {
+		if msg.From.ID == s.developerID {
+			s.addDeveloper(ctx, msg)
+			return
+		}
 		s.reply(ctx, msg.Chat.ID, textWelcome)
 		return
 	}
@@ -250,6 +270,22 @@ func (s *Service) resume(ctx context.Context, msg *models.Message) {
 		return
 	}
 	s.reply(ctx, msg.Chat.ID, "Подписка возобновлена.")
+}
+
+func (s *Service) addDeveloper(ctx context.Context, msg *models.Message) {
+	sub, err := s.store.AddRecipient(ctx, storage.Profile{
+		TelegramID: msg.From.ID,
+		Username:   msg.From.Username,
+		FirstName:  msg.From.FirstName,
+		LastName:   msg.From.LastName,
+	}, "developer")
+	if err != nil {
+		s.log.Error("add developer", "err", err, "telegram_id", msg.From.ID)
+		s.reply(ctx, msg.Chat.ID, textInternal)
+		return
+	}
+	s.log.Info("subscriber registered", "mode", "developer", "telegram_id", msg.From.ID)
+	s.replyToken(ctx, msg.Chat.ID, sub)
 }
 
 func (s *Service) onStop(ctx context.Context, _ *bot.Bot, u *models.Update) {

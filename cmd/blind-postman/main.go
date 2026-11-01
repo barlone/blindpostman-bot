@@ -60,6 +60,7 @@ func run(configPath string, log *slog.Logger) error {
 
 	tg, err := tgbot.New(ctx, tgbot.Config{
 		Token:       cfg.TelegramToken,
+		DeveloperID: cfg.DeveloperID,
 		Secret:      cfg.SharedSecret,
 		CallbackURL: cfg.CallbackURL,
 		CallbackTTL: cfg.CallbackTTL,

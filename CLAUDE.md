@@ -38,7 +38,8 @@ go run ./cmd/migrate status                             # also: create NAME, ver
 - `internal/delivery` — dispatcher that drains the queue and sends through `internal/tgbot`.
 - `internal/tgbot` — long polling for `/start`, `/stop`, `/status`, `/myid`, `/help`, plus `Send`.
 
-`api` and `delivery` depend on small interfaces (`Store`, `Bot`, `Sender`), so their tests use fakes.
+`api`, `delivery` and `tgbot` depend on small interfaces (`Store`, `Bot`, `Sender`), so their tests
+use fakes.
 
 ### Message path
 
@@ -67,6 +68,9 @@ services, so changing the format breaks links they generate themselves. One-time
 that know the shared secret; a row can also be inserted by hand, so never make the link a requirement.
 The Go type `Subscriber`, the `subscriber_id` columns and the `/api/v1/subscribers` paths all refer to
 this table.
+
+`[telegram] developer_id` names one user the bot makes exceptions for. For now that means a plain
+`/start` adds them to `recipients` without a link; new exceptions should check `Service.developerID`.
 
 ### Configuration
 
