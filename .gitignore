@@ -1,6 +1,7 @@
 config.ini
-.env
 /blind-postman
 /genlink
 *.exe
 .mcp.json
+gittoken
+/blindpostman-bot

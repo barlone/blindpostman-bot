@@ -7,7 +7,8 @@ set -euo pipefail
 # failed "source gittoken" did not stop them, pushed that repository here.
 cd "$(dirname "$(readlink -f "$0")")"
 
-# CGO off: nothing in the module needs it (lib/pq is pure Go). With it on, the build
+# Target is the LXC container: Linux x86-64, whatever this host is.
+# CGO off: nothing in the module needs it (pgx is pure Go). With it on, the build
 # needed gcc on the host and produced a binary tied to that host's glibc, so one built
 # on a newer system failed to start on an older one.
-CGO_ENABLED=0 go build -ldflags="-s -w" -o blindpostman-bot
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o blindpostman-bot ./cmd/blind-postman

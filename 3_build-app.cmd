@@ -5,4 +5,8 @@ setlocal
 rem CGO off, as in 3_build-app.sh: no C compiler needed.
 set CGO_ENABLED=0
 
-go build -ldflags="-s -w" -o blindpostman-bot
+rem Target is the LXC container: Linux x86-64.
+set GOOS=linux
+set GOARCH=amd64
+
+go build -ldflags="-s -w" -o blindpostman-bot ./cmd/blind-postman

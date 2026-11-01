@@ -1,0 +1,28 @@
+# Служба бота алертинга. Установка описана в deploy/DEPLOY.md.
+[Unit]
+Description=blindpostman Telegram alerting bot
+After=network-online.target
+Wants=network-online.target
+# Бот должен сам подняться, когда вернутся сеть или база, поэтому попытки не ограничены.
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=blindpostman
+Group=blindpostman
+WorkingDirectory=/opt/blindpostman-bot
+ExecStart=/opt/blindpostman-bot/blindpostman-bot -config /opt/blindpostman-bot/config.ini
+Restart=on-failure
+RestartSec=5
+# Приложение до 30 с дожидается отправок, которые уже идут: дадим ему закончить.
+TimeoutStopSec=45
+
+UMask=0077
+# Здесь только настройки, работающие без пространств имён: они не требуют
+# nesting в LXC. Остальная изоляция необязательна, см. DEPLOY.md.
+NoNewPrivileges=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+[Install]
+WantedBy=multi-user.target

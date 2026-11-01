@@ -74,6 +74,7 @@ func New(ctx context.Context, cfg Config, store *storage.Store, log *slog.Logger
 		bot.WithMessageTextHandler("start", bot.MatchTypeCommandStartOnly, s.onStart),
 		bot.WithMessageTextHandler("stop", bot.MatchTypeCommandStartOnly, s.onStop),
 		bot.WithMessageTextHandler("status", bot.MatchTypeCommandStartOnly, s.onStatus),
+		bot.WithMessageTextHandler("myid", bot.MatchTypeCommandStartOnly, s.onMyID),
 		bot.WithMessageTextHandler("help", bot.MatchTypeCommandStartOnly, s.onHelp),
 	)
 	if err != nil {
@@ -90,6 +91,7 @@ func New(ctx context.Context, cfg Config, store *storage.Store, log *slog.Logger
 	if _, err := b.SetMyCommands(ctx, &bot.SetMyCommandsParams{Commands: []models.BotCommand{
 		{Command: "status", Description: "Статус подписки"},
 		{Command: "stop", Description: "Отписаться от уведомлений"},
+		{Command: "myid", Description: "Мой Telegram ID"},
 		{Command: "help", Description: "Справка"},
 	}}); err != nil {
 		s.log.Warn("set commands failed", "err", err)
@@ -140,7 +142,8 @@ const (
 		"Для подписки откройте ссылку регистрации, полученную в сервисе."
 	textHelp = "/status — статус подписки\n" +
 		"/stop — отписаться от уведомлений\n" +
-		"/start — возобновить подписку\n\n" +
+		"/start — возобновить подписку\n" +
+		"/myid — мой Telegram ID\n\n" +
 		"Для новой регистрации используйте ссылку из сервиса."
 	textPrivateOnly = "Бот работает только в личных сообщениях."
 	textInternal    = "Внутренняя ошибка, попробуйте позже."
@@ -285,6 +288,12 @@ func (s *Service) onStatus(ctx context.Context, _ *bot.Bot, u *models.Update) {
 	default:
 		s.reply(ctx, msg.Chat.ID, fmt.Sprintf("Статус подписки: %s\nЗарегистрирован: %s",
 			sub.Status, sub.CreatedAt.Format("2006-01-02 15:04 MST")))
+	}
+}
+
+func (s *Service) onMyID(ctx context.Context, _ *bot.Bot, u *models.Update) {
+	if msg, ok := privateMessage(u); ok {
+		s.replyHTML(ctx, msg.Chat.ID, fmt.Sprintf("Ваш Telegram ID: <code>%d</code>", msg.From.ID))
 	}
 }
 

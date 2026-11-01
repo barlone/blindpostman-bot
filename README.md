@@ -31,7 +31,7 @@ HMAC-SHA256 от общего секрета (`link_shared_secret`). Форма�
   `callback_ttl`). Служба получает `code` и обменивает его на данные подписчика через
   `POST /api/v1/registrations/redeem`.
 
-Команды бота: `/status`, `/stop` (отписаться), `/start` без параметра (возобновить), `/help`.
+Команды бота: `/status`, `/stop` (отписаться), `/myid` (показать свой Telegram ID), `/start` без параметра (возобновить), `/help`.
 
 ## REST API
 
@@ -143,8 +143,7 @@ go run ./cmd/migrate down-to 2             # откатить до версии 
 ## Запуск
 
 Настройки читаются из `config.ini` (другой путь — флаг `-config`). Образец с описанием всех
-параметров — [config.example.ini](config.example.ini). Файл содержит секреты и исключён из git
-и из контекста сборки Docker.
+параметров — [config.example.ini](config.example.ini). Файл содержит секреты и исключён из git.
 
 ```bash
 cp config.example.ini config.ini
@@ -156,11 +155,8 @@ cp config.example.ini config.ini
 go run ./cmd/blind-postman
 ```
 
-Или в Docker (база данных берётся из `config.ini`, файл монтируется в контейнер):
-
-```bash
-docker compose up --build bot
-```
+На сервере бот работает как служба systemd в LXC-контейнере: файл службы и инструкция — в
+[deploy/DEPLOY.md](deploy/DEPLOY.md).
 
 Пароль в `[database]` указывается либо как есть, либо зашифрованным в формате `{HEX}`: это
 результат `TangleText` из `Autils.pas` в фигурных скобках. Алгоритм портирован в
@@ -176,6 +172,5 @@ go run ./cmd/genlink -bot my_alert_bot -mode token -ttl 1h
 Тесты: `go test ./...`. Тесты хранилища и очереди требуют PostgreSQL и без него пропускаются:
 
 ```bash
-docker compose up -d postgres
 TEST_DATABASE_URL="postgres://postman:postman@localhost:5432/postman?sslmode=disable" go test ./internal/storage -v
 ```
