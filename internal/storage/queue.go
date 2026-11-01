@@ -70,7 +70,7 @@ func (s *Store) MessageByID(ctx context.Context, id int64) (Message, error) {
 	err := s.pool.QueryRow(ctx, `
 		SELECT m.id, s.tg_id, m.status, m.attempts, m.error, m.tg_message_id,
 		       m.created_at, m.next_attempt_at, m.sent_at, m.expires_at
-		FROM messages m JOIN recipients s ON s.id = m.subscriber_id
+		FROM messages m JOIN recipients s ON s.internal_id = m.subscriber_id
 		WHERE m.id = $1`, id).Scan(&m.ID, &m.TelegramID, &m.Status, &m.Attempts, &m.Error,
 		&m.TelegramMessageID, &m.CreatedAt, &m.NextAttemptAt, &m.SentAt, &m.ExpiresAt)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -93,19 +93,34 @@ type ClaimedMessage struct {
 }
 
 // ClaimMessages берёт в работу до limit готовых к отправке сообщений и арендует их на lease.
+//
+// heads перебирает подписчиков рекурсией по индексу messages_pending_idx: DISTINCT ON читал бы
+// все ожидающие сообщения, и выборка замедлялась бы как раз тогда, когда очередь выросла.
+// Стоимость зависит от числа подписчиков с непустой очередью, а не от длины очереди.
 func (s *Store) ClaimMessages(ctx context.Context, limit int, lease, chatInterval time.Duration) ([]ClaimedMessage, error) {
 	rows, err := s.pool.Query(ctx, `
-		WITH heads AS (
-			SELECT DISTINCT ON (subscriber_id) id
-			FROM messages
-			WHERE status = 'pending'
-			ORDER BY subscriber_id, id
+		WITH RECURSIVE heads AS (
+			(SELECT subscriber_id, id
+			 FROM messages
+			 WHERE status = 'pending'
+			 ORDER BY subscriber_id, id
+			 LIMIT 1)
+			UNION ALL
+			SELECT n.subscriber_id, n.id
+			FROM heads h
+			CROSS JOIN LATERAL (
+				SELECT m.subscriber_id, m.id
+				FROM messages m
+				WHERE m.status = 'pending' AND m.subscriber_id > h.subscriber_id
+				ORDER BY m.subscriber_id, m.id
+				LIMIT 1
+			) n
 		),
 		claimable AS (
 			SELECT m.id
 			FROM messages m
 			JOIN heads h ON h.id = m.id
-			JOIN recipients s ON s.id = m.subscriber_id
+			JOIN recipients s ON s.internal_id = m.subscriber_id
 			WHERE m.status = 'pending'
 			  AND m.next_attempt_at <= now()
 			  AND (m.locked_until IS NULL OR m.locked_until < now())
@@ -119,7 +134,7 @@ func (s *Store) ClaimMessages(ctx context.Context, limit int, lease, chatInterva
 		    locked_until = now() + $3::bigint * interval '1 millisecond',
 		    updated_at   = now()
 		FROM claimable c, recipients s
-		WHERE m.id = c.id AND s.id = m.subscriber_id
+		WHERE m.id = c.id AND s.internal_id = m.subscriber_id
 		RETURNING m.id, m.subscriber_id, s.tg_id, s.status, m.text, m.parse_mode,
 		          m.disable_notification, m.attempts, m.expires_at`,
 		limit, chatInterval.Milliseconds(), lease.Milliseconds())
@@ -149,7 +164,7 @@ func (s *Store) CompleteMessage(ctx context.Context, m ClaimedMessage, tgMessage
 		WHERE id = $1`, m.ID, tgMessageID); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(ctx, `UPDATE recipients SET last_sent_at = now() WHERE id = $1`,
+	if _, err := tx.Exec(ctx, `UPDATE recipients SET last_sent_at = now() WHERE internal_id = $1`,
 		m.SubscriberID); err != nil {
 		return err
 	}
@@ -184,6 +199,21 @@ func (s *Store) ExpireMessages(ctx context.Context) (int64, error) {
 		UPDATE messages SET status = 'expired', locked_until = NULL, updated_at = now()
 		WHERE status = 'pending' AND expires_at <= now()
 		  AND (locked_until IS NULL OR locked_until < now())`)
+	return tag.RowsAffected(), err
+}
+
+// PurgeMessages удаляет до limit завершённых сообщений старше olderThan и возвращает их число.
+// Ожидающие сообщения не удаляются, сколько бы им ни было.
+func (s *Store) PurgeMessages(ctx context.Context, olderThan time.Duration, limit int) (int64, error) {
+	tag, err := s.pool.Exec(ctx, `
+		DELETE FROM messages
+		WHERE id IN (
+			SELECT id FROM messages
+			WHERE status <> 'pending'
+			  AND created_at < now() - $1::bigint * interval '1 millisecond'
+			ORDER BY created_at
+			LIMIT $2
+		)`, olderThan.Milliseconds(), limit)
 	return tag.RowsAffected(), err
 }
 

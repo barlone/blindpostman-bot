@@ -23,6 +23,7 @@ type Store interface {
 	FinishMessage(ctx context.Context, id int64, status, reason string) error
 	RetryMessage(ctx context.Context, id int64, delay time.Duration, reason string, countAttempt bool) error
 	ExpireMessages(ctx context.Context) (int64, error)
+	PurgeMessages(ctx context.Context, olderThan time.Duration, limit int) (int64, error)
 	SetStatus(ctx context.Context, subscriberID int64, status, reason string) error
 	ListenMessages(ctx context.Context, notify func()) error
 }
@@ -42,6 +43,8 @@ type Config struct {
 	MaxAttempts int
 	// PollInterval — как часто проверять очередь без уведомлений (ретраи, интервал чата).
 	PollInterval time.Duration
+	// Retention — сколько хранить завершённые сообщения. 0 — хранить всегда.
+	Retention time.Duration
 
 	// Lease — аренда сообщения воркером; должна быть больше LimiterWait + SendTimeout.
 	Lease       time.Duration
@@ -49,6 +52,11 @@ type Config struct {
 	SendTimeout time.Duration
 	BaseBackoff time.Duration
 	MaxBackoff  time.Duration
+	// ExpireInterval — как часто гасить просроченные сообщения. Сообщение, взятое в работу,
+	// проверяется на срок отдельно, так что редкий запуск не приводит к отправке устаревшего.
+	ExpireInterval time.Duration
+	// PurgeInterval — как часто удалять старые сообщения.
+	PurgeInterval time.Duration
 }
 
 func (c Config) withDefaults() Config {
@@ -73,6 +81,8 @@ func (c Config) withDefaults() Config {
 	def(&c.SendTimeout, 20*time.Second)
 	def(&c.BaseBackoff, 2*time.Second)
 	def(&c.MaxBackoff, 5*time.Minute)
+	def(&c.ExpireInterval, 10*time.Second)
+	def(&c.PurgeInterval, time.Hour)
 	return c
 }
 
@@ -112,6 +122,7 @@ func (d *Dispatcher) Run(ctx context.Context) {
 	d.log.Info("dispatcher started", "workers", d.cfg.Workers, "global_rate", d.cfg.GlobalRate,
 		"chat_interval", d.cfg.ChatInterval)
 	go d.listen(ctx)
+	go d.housekeep(ctx)
 
 	slots := make(chan struct{}, d.cfg.Workers)
 	var wg sync.WaitGroup
@@ -131,7 +142,6 @@ func (d *Dispatcher) Run(ctx context.Context) {
 		if p := d.pauseLeft(); p > 0 {
 			wait = p
 		} else if free := cap(slots) - len(slots); free > 0 {
-			d.expire(ctx)
 			msgs, err := d.store.ClaimMessages(ctx, free, d.cfg.Lease, d.cfg.ChatInterval)
 			if err != nil && ctx.Err() == nil {
 				d.log.Error("claim messages", "err", err)
@@ -168,6 +178,29 @@ func (d *Dispatcher) listen(ctx context.Context) {
 	}
 }
 
+// housekeep обслуживает очередь по таймеру. В цикле выборки этому не место: при полной скорости
+// он крутится на каждое освободившееся место, то есть десятки раз в секунду.
+func (d *Dispatcher) housekeep(ctx context.Context) {
+	expire := time.NewTicker(d.cfg.ExpireInterval)
+	defer expire.Stop()
+	purge := time.NewTicker(d.cfg.PurgeInterval)
+	defer purge.Stop()
+
+	// Сразу после старта: сервис могут перезапускать чаще, чем срабатывает PurgeInterval.
+	d.expire(ctx)
+	d.purge(ctx)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-expire.C:
+			d.expire(ctx)
+		case <-purge.C:
+			d.purge(ctx)
+		}
+	}
+}
+
 func (d *Dispatcher) expire(ctx context.Context) {
 	n, err := d.store.ExpireMessages(ctx)
 	if err != nil && ctx.Err() == nil {
@@ -175,6 +208,29 @@ func (d *Dispatcher) expire(ctx context.Context) {
 	}
 	if n > 0 {
 		d.log.Warn("messages expired undelivered", "count", n)
+	}
+}
+
+// purgeBatch — сколько сообщений удаляется одной транзакцией.
+const purgeBatch = 1000
+
+func (d *Dispatcher) purge(ctx context.Context) {
+	if d.cfg.Retention <= 0 {
+		return
+	}
+	var total int64
+	for {
+		n, err := d.store.PurgeMessages(ctx, d.cfg.Retention, purgeBatch)
+		if err != nil && ctx.Err() == nil {
+			d.log.Error("purge messages", "err", err)
+		}
+		total += n
+		if err != nil || n < purgeBatch {
+			break
+		}
+	}
+	if total > 0 {
+		d.log.Info("old messages purged", "count", total)
 	}
 }
 

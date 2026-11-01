@@ -37,6 +37,9 @@ type Config struct {
 	// MessageTTL — срок актуальности сообщения по умолчанию; после него недоставленное
 	// сообщение получает статус expired. 0 — бессрочно.
 	MessageTTL time.Duration
+	// MessageRetention — сколько хранить завершённые сообщения, считая от создания.
+	// 0 — хранить всегда.
+	MessageRetention time.Duration
 
 	Queue Queue
 }
@@ -82,6 +85,9 @@ func Load(path string) (Config, error) {
 	}
 	if r.str("alerts", "message_ttl", "") != "0" {
 		c.MessageTTL = r.duration("alerts", "message_ttl", time.Hour)
+	}
+	if r.str("alerts", "message_retention", "") != "0" {
+		c.MessageRetention = r.duration("alerts", "message_retention", 0)
 	}
 
 	if n := len(c.SharedSecret); n > 0 && n < startlink.MinSecretSize {

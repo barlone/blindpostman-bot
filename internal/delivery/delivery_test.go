@@ -24,6 +24,9 @@ type fakeStore struct {
 	queue     []storage.ClaimedMessage
 	outcomes  map[int64]outcome
 	subStatus map[int64]string
+	expires   int
+	purges    []int64 // сколько строк вернёт каждый вызов PurgeMessages
+	purged    []time.Duration
 }
 
 func newFakeStore(msgs ...storage.ClaimedMessage) *fakeStore {
@@ -66,7 +69,24 @@ func (f *fakeStore) RetryMessage(_ context.Context, id int64, delay time.Duratio
 	return nil
 }
 
-func (f *fakeStore) ExpireMessages(context.Context) (int64, error) { return 0, nil }
+func (f *fakeStore) ExpireMessages(context.Context) (int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.expires++
+	return 0, nil
+}
+
+func (f *fakeStore) PurgeMessages(_ context.Context, olderThan time.Duration, _ int) (int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.purged = append(f.purged, olderThan)
+	if len(f.purges) == 0 {
+		return 0, nil
+	}
+	n := f.purges[0]
+	f.purges = f.purges[1:]
+	return n, nil
+}
 
 func (f *fakeStore) SetStatus(_ context.Context, id int64, status, _ string) error {
 	f.mu.Lock()
@@ -208,6 +228,70 @@ func TestRunDeliversQueue(t *testing.T) {
 		if o := store.get(m.ID); o.status != storage.MessageSent {
 			t.Errorf("message %d: %+v", m.ID, o)
 		}
+	}
+}
+
+func TestExpireDoesNotRunOnEveryClaim(t *testing.T) {
+	var msgs []storage.ClaimedMessage
+	for i := range 20 {
+		m := msg(1)
+		m.ID = int64(i + 1)
+		msgs = append(msgs, m)
+	}
+	store := newFakeStore(msgs...)
+	sender := &fakeSender{}
+	d := New(Config{Workers: 1, GlobalRate: 1000, PollInterval: time.Millisecond, ExpireInterval: time.Hour},
+		store, sender, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { d.Run(ctx); close(done) }()
+
+	deadline := time.After(5 * time.Second)
+	for {
+		sender.mu.Lock()
+		n := sender.calls
+		sender.mu.Unlock()
+		if n == len(msgs) {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("delivered %d of %d", n, len(msgs))
+		case <-time.After(time.Millisecond):
+		}
+	}
+	cancel()
+	<-done
+
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if store.expires > 1 {
+		t.Fatalf("expire ran %d times, want only the start-up run", store.expires)
+	}
+}
+
+func TestPurge(t *testing.T) {
+	newD := func(store Store, retention time.Duration) *Dispatcher {
+		return New(Config{Retention: retention}, store, &fakeSender{}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	}
+
+	// Без срока хранения ничего не удаляется.
+	store := newFakeStore()
+	newD(store, 0).purge(context.Background())
+	if len(store.purged) != 0 {
+		t.Fatalf("purge ran with retention disabled: %v", store.purged)
+	}
+
+	// Полная пачка значит, что осталось ещё; неполная завершает обход.
+	store = newFakeStore()
+	store.purges = []int64{purgeBatch, purgeBatch, 3, purgeBatch}
+	newD(store, time.Hour).purge(context.Background())
+	if len(store.purged) != 3 {
+		t.Fatalf("purge called %d times, want 3", len(store.purged))
+	}
+	if store.purged[0] != time.Hour {
+		t.Fatalf("purge older than %v, want 1h", store.purged[0])
 	}
 }
 

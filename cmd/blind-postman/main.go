@@ -107,6 +107,7 @@ func run(configPath string, log *slog.Logger) error {
 		ChatInterval: cfg.Queue.ChatInterval,
 		MaxAttempts:  cfg.Queue.MaxAttempts,
 		PollInterval: cfg.Queue.PollInterval,
+		Retention:    cfg.MessageRetention,
 	}, store, tg, log)
 
 	srv := &http.Server{

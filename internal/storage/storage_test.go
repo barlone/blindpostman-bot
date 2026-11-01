@@ -197,6 +197,86 @@ func TestRetryAndExpire(t *testing.T) {
 	}
 }
 
+func TestClaimTakesHeadOfEverySubscriber(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	// Голова подписчика в работе или отложена — его очередь ждёт, но не мешает остальным.
+	leased := register(t, s, 1, "a")
+	delayed := register(t, s, 2, "b")
+	free := register(t, s, 3, "c")
+	done := register(t, s, 4, "d")
+
+	leasedHead := enqueue(t, s, leased, "1")
+	enqueue(t, s, leased, "2")
+	delayedHead := enqueue(t, s, delayed, "1")
+	enqueue(t, s, delayed, "2")
+	if got := claimIDs(t, s, 0); !sameIDs(got, leasedHead, delayedHead) {
+		t.Fatalf("first claim %v", got)
+	}
+	if err := s.RetryMessage(ctx, delayedHead, time.Hour, "", true); err != nil {
+		t.Fatal(err)
+	}
+
+	sent := enqueue(t, s, done, "1")
+	claimIDs(t, s, 0)
+	if err := s.CompleteMessage(ctx, ClaimedMessage{ID: sent, SubscriberID: done.ID}, 1); err != nil {
+		t.Fatal(err)
+	}
+	next := enqueue(t, s, done, "2")
+	f1 := enqueue(t, s, free, "1")
+	f2 := enqueue(t, s, free, "2")
+
+	if got := claimIDs(t, s, 0); !sameIDs(got, next, f1) {
+		t.Fatalf("second claim %v, want [%d %d]", got, next, f1)
+	}
+	if err := s.CompleteMessage(ctx, ClaimedMessage{ID: f1, SubscriberID: free.ID}, 2); err != nil {
+		t.Fatal(err)
+	}
+	if got := claimIDs(t, s, 0); !sameIDs(got, f2) {
+		t.Fatalf("third claim %v, want [%d]", got, f2)
+	}
+}
+
+func TestPurgeMessages(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	a := register(t, s, 1, "a")
+
+	var ids []int64
+	for _, status := range []string{MessageSent, MessageFailed, MessageExpired, MessagePending} {
+		var id int64
+		if err := s.pool.QueryRow(ctx, `INSERT INTO messages (subscriber_id, text, status, created_at)
+			VALUES ($1, 'old', $2, now() - interval '2 hours') RETURNING id`, a.ID, status).Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, id)
+	}
+	fresh := enqueue(t, s, a, "fresh")
+	if err := s.FinishMessage(ctx, fresh, MessageFailed, "x"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Лимит пачки соблюдается.
+	if n, err := s.PurgeMessages(ctx, time.Hour, 2); err != nil || n != 2 {
+		t.Fatalf("first batch: %d, %v", n, err)
+	}
+	if n, err := s.PurgeMessages(ctx, time.Hour, 10); err != nil || n != 1 {
+		t.Fatalf("second batch: %d, %v", n, err)
+	}
+	for _, id := range ids[:3] {
+		if _, err := s.MessageByID(ctx, id); !errors.Is(err, ErrNotFound) {
+			t.Errorf("message %d: got %v, want ErrNotFound", id, err)
+		}
+	}
+	// Ожидающее сообщение и свежее завершённое остаются.
+	for _, id := range []int64{ids[3], fresh} {
+		if _, err := s.MessageByID(ctx, id); err != nil {
+			t.Errorf("message %d must stay: %v", id, err)
+		}
+	}
+}
+
 func TestDeactivationCancelsQueue(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
@@ -289,7 +369,7 @@ func TestRecipients(t *testing.T) {
 	}
 
 	token := uuid.New()
-	if _, err := s.pool.Exec(ctx, `INSERT INTO recipients (tg_id, token, alias)
+	if _, err := s.pool.Exec(ctx, `INSERT INTO recipients (tg_id, id, alias)
 		VALUES (1, $1, NULL), (2, $2, 'ops')`, token, uuid.New()); err != nil {
 		t.Fatal(err)
 	}
@@ -314,7 +394,7 @@ func TestManualRecipientIsSubscribed(t *testing.T) {
 	ctx := context.Background()
 
 	token := uuid.New()
-	if _, err := s.pool.Exec(ctx, `INSERT INTO recipients (tg_id, token, alias)
+	if _, err := s.pool.Exec(ctx, `INSERT INTO recipients (tg_id, id, alias)
 		VALUES (1, $1, 'ops')`, token); err != nil {
 		t.Fatal(err)
 	}
@@ -348,7 +428,7 @@ func TestRegisterKeepsManualRecipient(t *testing.T) {
 	ctx := context.Background()
 
 	token := uuid.New()
-	if _, err := s.pool.Exec(ctx, `INSERT INTO recipients (tg_id, token, alias, status)
+	if _, err := s.pool.Exec(ctx, `INSERT INTO recipients (tg_id, id, alias, status)
 		VALUES (1, $1, 'ops', 'unsubscribed')`, token); err != nil {
 		t.Fatal(err)
 	}
@@ -570,5 +650,44 @@ func TestAdoptLegacyMigrations(t *testing.T) {
 	}
 	if legacy {
 		t.Fatal("schema_migrations must be dropped")
+	}
+}
+
+func TestRecipientGroups(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	recipient, group := uuid.New(), uuid.New()
+	if _, err := s.pool.Exec(ctx, `INSERT INTO recipients (tg_id, id) VALUES (1, $1)`, recipient); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.pool.Exec(ctx, `INSERT INTO recipient_groups (id, name, alias)
+		VALUES ($1, 'Дежурные', 'oncall')`, group); err != nil {
+		t.Fatal(err)
+	}
+
+	insert := `INSERT INTO recipient_group_set (group_id, recipient_id) VALUES ($1, $2)`
+	if _, err := s.pool.Exec(ctx, insert, group, recipient); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.pool.Exec(ctx, insert, group, recipient); err == nil {
+		t.Fatal("duplicate group member must be rejected")
+	}
+	if _, err := s.pool.Exec(ctx, insert, uuid.New(), recipient); err == nil {
+		t.Fatal("unknown group must be rejected")
+	}
+	if _, err := s.pool.Exec(ctx, insert, group, uuid.New()); err == nil {
+		t.Fatal("unknown recipient must be rejected")
+	}
+
+	if _, err := s.pool.Exec(ctx, `DELETE FROM recipients WHERE id = $1`, recipient); err != nil {
+		t.Fatal(err)
+	}
+	var left int
+	if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM recipient_group_set`).Scan(&left); err != nil {
+		t.Fatal(err)
+	}
+	if left != 0 {
+		t.Fatalf("group members after deleting recipient: %d", left)
 	}
 }

@@ -37,6 +37,7 @@ link_ttl=2h
 
 [alerts]
 message_ttl=30m
+message_retention=720h
 
 [send-queue]
 queue_workers=4
@@ -65,8 +66,8 @@ func TestLoad(t *testing.T) {
 		string(c.SharedSecret) != testSecret {
 		t.Errorf("unexpected config: %+v", c)
 	}
-	if c.LinkTTL != 2*time.Hour || c.MessageTTL != 30*time.Minute {
-		t.Errorf("ttl: link %v, message %v", c.LinkTTL, c.MessageTTL)
+	if c.LinkTTL != 2*time.Hour || c.MessageTTL != 30*time.Minute || c.MessageRetention != 720*time.Hour {
+		t.Errorf("ttl: link %v, message %v, retention %v", c.LinkTTL, c.MessageTTL, c.MessageRetention)
 	}
 	if c.DeveloperID != 5000000000 {
 		t.Errorf("developer id %d", c.DeveloperID)
@@ -104,7 +105,7 @@ link_shared_secret=`+testSecret+`
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.HTTPAddr != ":8080" || c.LinkTTL != 24*time.Hour || c.MessageTTL != time.Hour ||
+	if c.HTTPAddr != ":8080" || c.LinkTTL != 24*time.Hour || c.MessageTTL != time.Hour || c.MessageRetention != 0 ||
 		c.CallbackTTL != 10*time.Minute || c.CallbackURL != "" || c.DeveloperID != 0 {
 		t.Errorf("unexpected defaults: %+v", c)
 	}
@@ -123,6 +124,16 @@ func TestMessageTTLZeroMeansNoExpiry(t *testing.T) {
 	}
 	if c.MessageTTL != 0 {
 		t.Errorf("got %v, want 0", c.MessageTTL)
+	}
+}
+
+func TestMessageRetentionZeroKeepsMessages(t *testing.T) {
+	c, err := load(t, strings.Replace(validINI("plain"), "message_retention=720h", "message_retention=0", 1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.MessageRetention != 0 {
+		t.Errorf("got %v, want 0", c.MessageRetention)
 	}
 }
 

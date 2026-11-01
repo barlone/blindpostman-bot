@@ -42,7 +42,8 @@ info:
     ## Доставка
 
     Отправка асинхронная: `POST /api/v1/messages` ставит сообщение в очередь и сразу отвечает
-    `202`. Результат доступен через `GET /api/v1/messages/{id}`. Сообщения одному подписчику
+    `202`. Результат доступен через `GET /api/v1/messages/{id}`, пока сообщение хранится
+    (срок задаёт настройка `message_retention`). Сообщения одному подписчику
     уходят строго по очереди. Гарантия доставки — at-least-once: при сбое сообщение может
     прийти повторно.
 
@@ -363,7 +364,7 @@ components:
         token:
           type: string
           format: uuid
-          description: Токен получателя, колонка `recipients.token`
+          description: Токен получателя, колонка `recipients.id`
         alias:
           type: string
           description: Псевдоним получателя, колонка `recipients.alias`

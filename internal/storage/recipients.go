@@ -16,7 +16,7 @@ type Recipient struct {
 
 // Recipients возвращает всех получателей.
 func (s *Store) Recipients(ctx context.Context) ([]Recipient, error) {
-	rows, err := s.pool.Query(ctx, `SELECT tg_id, token, alias FROM recipients ORDER BY tg_id`)
+	rows, err := s.pool.Query(ctx, `SELECT tg_id, id, alias FROM recipients ORDER BY tg_id`)
 	if err != nil {
 		return nil, fmt.Errorf("storage: query recipients: %w", err)
 	}

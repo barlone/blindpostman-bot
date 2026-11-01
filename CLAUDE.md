@@ -53,6 +53,8 @@ keep true when changing `internal/storage/queue.go` or `internal/delivery`:
 - Delivery is at-least-once: a crash between sending and recording the result resends after the lease.
 - A 429 pauses sending for `retry_after` and returns the message without spending an attempt.
   The global rate limit and this pause live in process memory.
+- The claim loop runs up to tens of times per second, so anything in it must not read the whole queue.
+  Periodic work belongs in `Dispatcher.housekeep`.
 
 Run one instance per `bot_token`: the queue allows replicas, but Telegram allows one poller per token
 (`409 Conflict`).
@@ -68,6 +70,9 @@ services, so changing the format breaks links they generate themselves. One-time
 that know the shared secret; a row can also be inserted by hand, so never make the link a requirement.
 The Go type `Subscriber`, the `subscriber_id` columns and the `/api/v1/subscribers` paths all refer to
 this table.
+
+In `recipients`, `id` is the UUID token (`Subscriber.Token`, `token` in the API), and `internal_id` is the
+bigint primary key that the `subscriber_id` columns reference (`Subscriber.ID`). Groups reference `id`.
 
 `[telegram] developer_id` names one user the bot makes exceptions for. For now that means a plain
 `/start` adds them to `recipients` without a link; new exceptions should check `Service.developerID`.

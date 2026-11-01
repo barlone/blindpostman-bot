@@ -40,7 +40,7 @@ type Subscriber struct {
 	UpdatedAt  time.Time
 }
 
-const subscriberColumns = `id, tg_id, username, first_name, last_name, token, status, created_at, updated_at`
+const subscriberColumns = `internal_id, tg_id, username, first_name, last_name, id, status, created_at, updated_at`
 
 func scanSubscriber(row pgx.Row, extra ...any) (Subscriber, error) {
 	var s Subscriber
@@ -162,7 +162,7 @@ func (s *Store) AddRecipient(ctx context.Context, p Profile, mode string) (Subsc
 
 func upsertRecipient(ctx context.Context, tx pgx.Tx, p Profile) (Subscriber, error) {
 	sub, err := scanSubscriber(tx.QueryRow(ctx, `
-		INSERT INTO recipients (tg_id, username, first_name, last_name, token)
+		INSERT INTO recipients (tg_id, username, first_name, last_name, id)
 		VALUES ($1, $2, $3, $4, $5)
 		ON CONFLICT (tg_id) DO UPDATE SET
 			username   = EXCLUDED.username,
@@ -194,7 +194,7 @@ func (s *Store) RedeemCallbackCode(ctx context.Context, codeHash []byte) (Subscr
 			RETURNING subscriber_id, nonce
 		)
 		SELECT `+prefixed("s.", subscriberColumns)+`, c.nonce
-		FROM c JOIN recipients s ON s.id = c.subscriber_id`, codeHash), &nonce)
+		FROM c JOIN recipients s ON s.internal_id = c.subscriber_id`, codeHash), &nonce)
 	if err != nil {
 		return Subscriber{}, nil, err
 	}
@@ -213,7 +213,7 @@ func (s *Store) SubscriberByTelegramID(ctx context.Context, telegramID int64) (S
 
 func (s *Store) SubscriberByToken(ctx context.Context, token uuid.UUID) (Subscriber, error) {
 	return scanSubscriber(s.pool.QueryRow(ctx,
-		`SELECT `+subscriberColumns+` FROM recipients WHERE token = $1`, token))
+		`SELECT `+subscriberColumns+` FROM recipients WHERE id = $1`, token))
 }
 
 func (s *Store) SubscriberByAlias(ctx context.Context, alias string) (Subscriber, error) {
@@ -232,8 +232,8 @@ func (s *Store) SetStatus(ctx context.Context, subscriberID int64, status, reaso
 	var prev string
 	err = tx.QueryRow(ctx, `
 		UPDATE recipients s SET status = $2, updated_at = now()
-		FROM (SELECT id, status FROM recipients WHERE id = $1 FOR UPDATE) old
-		WHERE s.id = old.id
+		FROM (SELECT internal_id, status FROM recipients WHERE internal_id = $1 FOR UPDATE) old
+		WHERE s.internal_id = old.internal_id
 		RETURNING old.status`, subscriberID, status).Scan(&prev)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ErrNotFound
