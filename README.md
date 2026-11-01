@@ -114,7 +114,24 @@ curl -X POST localhost:8080/api/v1/registration-links \
 
 ## Хранение
 
-Миграции встроены в бинарник и применяются при старте ([internal/storage/migrations](internal/storage/migrations)).
+Схемой управляет [goose](https://github.com/pressly/goose). Миграции встроены в бинарник и
+применяются при старте ([internal/storage/migrations](internal/storage/migrations)), а версии
+хранятся в таблице `goose_db_version`.
+
+Каждая миграция — SQL-файл с секциями `-- +goose Up` и `-- +goose Down`. Применённые файлы не
+меняют: любое изменение схемы оформляется новой миграцией.
+
+```bash
+go run ./cmd/migrate create add_something  # создать файл новой миграции
+go run ./cmd/migrate status                # показать состояние миграций
+go run ./cmd/migrate version               # показать текущую версию
+go run ./cmd/migrate up                    # применить новые миграции
+go run ./cmd/migrate down                  # откатить последнюю
+go run ./cmd/migrate down-to 2             # откатить до версии 2
+```
+
+После отката запускайте версию приложения без откаченных миграций: текущая применит их снова
+при старте.
 
 - `subscribers` — подписчики, токен, статус (`active` / `unsubscribed` / `blocked`)
 - `registration_nonces` — использованные ссылки регистрации
