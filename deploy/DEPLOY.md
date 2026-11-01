@@ -133,6 +133,64 @@ systemctl restart blindpostman-bot
 go run ./cmd/migrate -config config.ini down
 ```
 
+## Nginx
+
+Nginx принимает HTTPS и передаёт в бота только запросы к `/api/` и `/doc/`. Конфиг —
+[blindpostman-bot.nginx.conf](blindpostman-bot.nginx.conf). Он рассчитан на nginx на отдельном
+хосте и обращается к контейнеру по `192.168.0.212:8080`, поэтому этот адрес должен быть постоянным.
+Если nginx стоит в том же контейнере, замените адрес в `proxy_pass` на `127.0.0.1`, а в `config.ini`
+укажите `listen=127.0.0.1:8080`.
+
+### DNS
+
+Зона `dsstalker.online` обслуживается Cloudflare. Создайте там запись `A` с именем поддомена и
+внешним адресом хоста с nginx. Порты 80 и 443 этого адреса должны вести на nginx.
+
+Для API выберите режим **DNS only** (серое облако): TLS завершается на вашем nginx, а Cloudflare не
+видит `api_token` и тексты алертов. В режиме **Proxied** (оранжевое облако) он расшифровывает весь
+трафик, nginx видит адреса Cloudflare вместо адресов служб, поэтому `allow` по IP не работает. Если
+он всё же нужен, поставьте SSL/TLS в **Full (strict)**: при **Flexible** запросы зациклятся на
+редиректе с HTTP на HTTPS.
+
+### Установка
+
+Команды для Debian и Ubuntu выполняются на хосте с nginx. Сертификат выпускается до установки
+конфига, иначе `nginx -t` не найдёт его файлы. `certonly --nginx` не меняет конфиги nginx, а
+продлевать сертификат будет таймер certbot.
+
+```bash
+apt-get install -y nginx certbot python3-certbot-nginx
+certbot certonly --nginx -d blindpostman.dsstalker.online
+```
+
+Скопируйте `deploy/blindpostman-bot.nginx.conf` на хост, затем:
+
+```bash
+install -m 0644 blindpostman-bot.nginx.conf /etc/nginx/sites-available/blindpostman-bot.conf
+ln -s ../sites-available/blindpostman-bot.conf /etc/nginx/sites-enabled/blindpostman-bot.conf
+nginx -t
+systemctl reload nginx
+```
+
+### Проверка
+
+```bash
+curl -i https://blindpostman.dsstalker.online/api/v1/subscribers/1
+```
+
+Ответ `401` с телом `{"error":"unauthorized"}` приходит от самого бота, значит цепочка работает.
+Запрос с `Authorization: Bearer <api_token>` вернёт данные подписчика или `404` с
+`subscriber not found`, если такого подписчика нет.
+
+Документация API открывается без токена по адресу `https://blindpostman.dsstalker.online/doc/`.
+Если она не нужна снаружи, удалите из конфига блок `location /doc/` или ограничьте его через
+`allow` и `deny`.
+
+### Закройте прямой доступ
+
+Порт 8080 отдаёт API по HTTP без TLS. Разрешите его только с адреса nginx, например файрволом
+контейнера в Proxmox (Firewall → Add, порт 8080, источник — адрес хоста с nginx, остальное запрещено).
+
 ## Дополнительная изоляция
 
 Эти настройки используют пространства имён. В непривилегированном LXC они работают только с
@@ -173,4 +231,7 @@ systemctl restart blindpostman-bot
 | `x509: certificate signed by unknown authority` | Не установлен `ca-certificates` |
 | `409 Conflict`, `terminated by other getUpdates` | Запущен второй экземпляр с тем же `bot_token` |
 | `password: cannot decrypt` | Значение `password` повреждено при копировании |
+| Nginx отвечает `502 Bad Gateway` | Бот не запущен, сменился адрес контейнера или файрвол закрыл 8080 для хоста с nginx |
+| `ERR_TOO_MANY_REDIRECTS` | Cloudflare в режиме Flexible: переключите на Full (strict) или DNS only |
+| `nginx -t`: `socket() [::]:80 failed` | На хосте выключен IPv6: уберите из конфига строки `listen [::]` |
 | Служба перезапускается каждые 5 секунд | Смотрите первую ошибку `fatal` в журнале: при недоступной базе или Telegram служба сама поднимется, когда они вернутся |

@@ -1,0 +1,523 @@
+openapi: 3.0.3
+
+# Спецификация REST API бота. Раздаётся самим сервером по адресу /doc/openapi.yaml,
+# Swagger UI — по /doc. Написана вручную: тесты в internal/api/docs_test.go сверяют её
+# с маршрутами сервера и полями запросов и ответов.
+
+info:
+  title: blindpostman API
+  version: "0.1.0"
+  description: |
+    REST API Telegram-бота алертинга. Служба регистрирует своих пользователей через
+    подписанную ссылку и отправляет им сообщения по Telegram ID.
+
+    ## Авторизация
+
+    Все методы `/api/v1/*` требуют заголовок `Authorization: Bearer <api_token>`.
+    Значение `api_token` задаётся в `config.ini`. Без него или с неверным токеном метод
+    отвечает `401`. В Swagger UI токен вводится без слова `Bearer` через кнопку **Authorize**.
+
+    ## Ошибки
+
+    Отказы приходят с кодом HTTP и телом `{"error":"текст"}`. Если запрос не уложился в
+    30 секунд, сервер отвечает `503` с телом `{"error":"timeout"}`.
+
+    Тело запроса — JSON до 64 КиБ. Неизвестные поля отвергаются с кодом `400`.
+
+    ## Регистрация
+
+    1. Служба получает ссылку через `POST /api/v1/registration-links` и показывает её
+       пользователю. Ссылка одноразовая, поле `nonce` связывает её с пользователем службы.
+    2. Пользователь открывает ссылку и попадает в бота.
+    3. Дальше всё зависит от режима ссылки:
+       * `token` — бот показывает UUID-токен, пользователь вводит его в службе, а служба
+         вызывает `POST /api/v1/subscribers/resolve`;
+       * `callback` — бот показывает одноразовую ссылку `<callback_url>?code=...`, служба
+         получает `code` и вызывает `POST /api/v1/registrations/redeem`. Режим требует
+         настройки `callback_url`, без неё бот откажет пользователю в регистрации.
+
+    ## Доставка
+
+    Отправка асинхронная: `POST /api/v1/messages` ставит сообщение в очередь и сразу отвечает
+    `202`. Результат доступен через `GET /api/v1/messages/{id}`. Сообщения одному подписчику
+    уходят строго по очереди. Гарантия доставки — at-least-once: при сбое сообщение может
+    прийти повторно.
+
+servers:
+  - url: /
+    description: этот сервер
+
+tags:
+  - name: messages
+    description: Отправка сообщений и статус доставки.
+  - name: registration
+    description: Ссылки регистрации и подтверждение подписчика.
+  - name: subscribers
+    description: Данные подписчиков.
+  - name: service
+    description: Служебные методы.
+
+security:
+  - bearerAuth: []
+
+paths:
+  /api/v1/messages:
+    post:
+      tags: [messages]
+      summary: Поставить сообщение в очередь
+      operationId: sendMessage
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SendMessageRequest"
+            example:
+              telegram_id: 123456789
+              text: "<b>CPU 98%</b> on db-1"
+              parse_mode: HTML
+      responses:
+        "202":
+          description: Сообщение в очереди
+          headers:
+            Location:
+              description: Адрес статуса сообщения
+              schema:
+                type: string
+                example: /api/v1/messages/17
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SendMessageResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: Поле `token` не совпадает с токеном подписчика
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error: token does not match subscriber
+        "404":
+          $ref: "#/components/responses/SubscriberNotFound"
+        "409":
+          description: Подписчик отписался или заблокировал бота
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error: subscriber is blocked
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/messages/{id}:
+    get:
+      tags: [messages]
+      summary: Статус доставки сообщения
+      operationId: getMessage
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Значение `message_id` из ответа на отправку
+          schema:
+            type: integer
+            format: int64
+          example: 17
+      responses:
+        "200":
+          description: Сообщение
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Message"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          description: Сообщение не найдено
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error: message not found
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/registration-links:
+    post:
+      tags: [registration]
+      summary: Сгенерировать ссылку регистрации
+      operationId: createRegistrationLink
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateLinkRequest"
+            example:
+              mode: token
+              ttl_seconds: 3600
+      responses:
+        "200":
+          description: Ссылка создана
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreateLinkResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/registrations/redeem:
+    post:
+      tags: [registration]
+      summary: Обменять callback-код на данные подписчика
+      description: Код одноразовый. Ответ содержит токен подписчика и `nonce` ссылки регистрации.
+      operationId: redeemCallbackCode
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RedeemRequest"
+      responses:
+        "200":
+          description: Код погашен
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Subscriber"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          description: Код неверный, просрочен или уже использован
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error: code is invalid, expired or already used
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/subscribers/resolve:
+    post:
+      tags: [subscribers]
+      summary: Найти подписчика по токену
+      description: Для режима `token`. Служба узнаёт `telegram_id` по токену, который ввёл пользователь.
+      operationId: resolveToken
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ResolveRequest"
+      responses:
+        "200":
+          description: Подписчик
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Subscriber"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/SubscriberNotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/subscribers/{telegram_id}:
+    get:
+      tags: [subscribers]
+      summary: Статус подписчика
+      description: Токен в ответ не входит.
+      operationId: getSubscriber
+      parameters:
+        - name: telegram_id
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+          example: 123456789
+      responses:
+        "200":
+          description: Подписчик
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Subscriber"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/SubscriberNotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /healthz:
+    get:
+      tags: [service]
+      summary: Проверка живости
+      description: Проверяет доступ к базе данных. Токен не нужен. Через nginx не публикуется.
+      operationId: health
+      security: []
+      responses:
+        "200":
+          description: Сервер работает
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status:
+                    type: string
+                    example: ok
+        "503":
+          description: База данных недоступна
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error: database unavailable
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: Значение `api_token` из `config.ini`.
+
+  responses:
+    BadRequest:
+      description: Неверные параметры или тело запроса
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error: telegram_id is required
+    Unauthorized:
+      description: Токен не передан или неверен
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error: unauthorized
+    SubscriberNotFound:
+      description: Подписчик не найден
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error: subscriber not found
+    InternalError:
+      description: Внутренняя ошибка сервера
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error: internal error
+
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+
+    SendMessageRequest:
+      type: object
+      additionalProperties: false
+      required: [telegram_id, text]
+      properties:
+        telegram_id:
+          type: integer
+          format: int64
+          description: Telegram ID подписчика, не 0
+          example: 123456789
+        token:
+          type: string
+          format: uuid
+          description: Необязательная проверка, что получатель именно тот, кого ожидает служба
+        text:
+          type: string
+          maxLength: 4096
+          description: Текст сообщения, не пустой
+        parse_mode:
+          type: string
+          enum: [HTML, MarkdownV2, Markdown]
+          description: Разметка текста. Если поле не задано, текст отправляется как есть
+        disable_notification:
+          type: boolean
+          default: false
+          description: Доставить без звука
+        ttl_seconds:
+          type: integer
+          minimum: 0
+          description: Сколько секунд сообщение актуально. 0 или отсутствие поля — значение `message_ttl` из настроек
+
+    SendMessageResponse:
+      type: object
+      required: [message_id, status]
+      properties:
+        message_id:
+          type: integer
+          format: int64
+          example: 17
+        status:
+          type: string
+          enum: [pending]
+        expires_at:
+          type: string
+          format: date-time
+          description: Срок актуальности. Нет поля — сообщение бессрочное
+
+    Message:
+      type: object
+      required: [message_id, telegram_id, status, attempts, created_at]
+      properties:
+        message_id:
+          type: integer
+          format: int64
+          example: 17
+        telegram_id:
+          type: integer
+          format: int64
+          example: 123456789
+        status:
+          type: string
+          enum: [pending, sent, failed, expired]
+          description: |
+            * `pending` — в очереди или в отправке
+            * `sent` — доставлено
+            * `failed` — не доставлено, причина в поле `error`
+            * `expired` — не успели доставить до `expires_at`
+        attempts:
+          type: integer
+          description: Сколько попыток отправки потрачено
+        error:
+          type: string
+          description: Последняя ошибка отправки
+        telegram_message_id:
+          type: integer
+          format: int64
+          description: ID сообщения в Telegram
+        created_at:
+          type: string
+          format: date-time
+        next_attempt_at:
+          type: string
+          format: date-time
+          description: Время следующей попытки, только для статуса `pending`
+        sent_at:
+          type: string
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
+
+    CreateLinkRequest:
+      type: object
+      additionalProperties: false
+      required: [mode]
+      properties:
+        mode:
+          type: string
+          enum: [token, callback]
+        ttl_seconds:
+          type: integer
+          minimum: 0
+          maximum: 2592000
+          description: Срок действия ссылки, не больше 30 суток. 0 или отсутствие поля — значение `link_ttl` из настроек
+
+    CreateLinkResponse:
+      type: object
+      required: [link, start_param, nonce, mode, expires_at]
+      properties:
+        link:
+          type: string
+          description: Ссылка на бота вида `https://t.me/<бот>?start=<start_param>`
+        start_param:
+          type: string
+          minLength: 40
+          maxLength: 40
+          description: Параметр команды `/start`, base64url
+        nonce:
+          type: string
+          description: Случайный идентификатор ссылки, hex. Служба может связать по нему ссылку со своим пользователем
+          example: 9f86d081884c7d65
+        mode:
+          type: string
+          enum: [token, callback]
+        expires_at:
+          type: string
+          format: date-time
+
+    RedeemRequest:
+      type: object
+      additionalProperties: false
+      required: [code]
+      properties:
+        code:
+          type: string
+          description: Значение параметра `code` из callback-ссылки
+
+    ResolveRequest:
+      type: object
+      additionalProperties: false
+      required: [token]
+      properties:
+        token:
+          type: string
+          format: uuid
+          description: Токен, который бот показал пользователю
+
+    Subscriber:
+      type: object
+      required: [telegram_id, status, registered_at]
+      properties:
+        telegram_id:
+          type: integer
+          format: int64
+          example: 123456789
+        username:
+          type: string
+        first_name:
+          type: string
+        last_name:
+          type: string
+        status:
+          type: string
+          enum: [active, unsubscribed, blocked]
+        token:
+          type: string
+          format: uuid
+          description: Только в ответах `resolve` и `redeem`
+        nonce:
+          type: string
+          description: Идентификатор ссылки регистрации, только в ответе `redeem`
+        registered_at:
+          type: string
+          format: date-time

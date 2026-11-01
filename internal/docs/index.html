@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>blindpostman API — документация</title>
+  <link rel="stylesheet" href="swagger-ui/swagger-ui.css">
+  <link rel="icon" type="image/png" sizes="32x32" href="swagger-ui/favicon-32x32.png">
+  <link rel="icon" type="image/png" sizes="16x16" href="swagger-ui/favicon-16x16.png">
+  <style>
+    html { box-sizing: border-box; overflow-y: scroll; }
+    *, *:before, *:after { box-sizing: inherit; }
+    body { margin: 0; background: #fafafa; }
+    /* Спецификация одна, поле её адреса в верхней панели не нужно. */
+    .swagger-ui .topbar .download-url-wrapper { display: none; }
+  </style>
+</head>
+<body>
+  <div id="swagger-ui"></div>
+  <script src="swagger-ui/swagger-ui-bundle.js" charset="utf-8"></script>
+  <script src="swagger-ui/swagger-ui-standalone-preset.js" charset="utf-8"></script>
+  <script>
+    window.onload = function () {
+      window.ui = SwaggerUIBundle({
+        url: "openapi.yaml",
+        dom_id: "#swagger-ui",
+        deepLinking: true,
+        // Токен из Authorize переживает перезагрузку: он хранится в localStorage браузера.
+        persistAuthorization: true,
+        docExpansion: "list",
+        defaultModelsExpandDepth: 0,
+        displayRequestDuration: true,
+        tryItOutEnabled: false,
+        // Иначе страница передаёт адрес спецификации на validator.swagger.io.
+        validatorUrl: null,
+        presets: [SwaggerUIBundle.presets.apis, SwaggerUIStandalonePreset],
+        plugins: [SwaggerUIBundle.plugins.DownloadUrl],
+        layout: "StandaloneLayout"
+      });
+    };
+  </script>
+</body>
+</html>

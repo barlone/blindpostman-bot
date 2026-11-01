@@ -19,6 +19,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/blind-postman/blind-postman/internal/docs"
 	"github.com/blind-postman/blind-postman/internal/storage"
 	"github.com/blind-postman/blind-postman/pkg/startlink"
 )
@@ -73,16 +74,30 @@ func New(store Store, bot Bot, cfg Config, log *slog.Logger) *Server {
 	}
 }
 
+type route struct {
+	pattern string
+	handler http.Handler
+}
+
+// routes перечисляет методы API. Каждый из них описан в internal/docs/openapi.yaml.
+func (s *Server) routes() []route {
+	return []route{
+		{"GET /healthz", http.HandlerFunc(s.health)},
+		{"POST /api/v1/messages", s.auth(s.sendMessage)},
+		{"GET /api/v1/messages/{id}", s.auth(s.getMessage)},
+		{"POST /api/v1/registration-links", s.auth(s.createLink)},
+		{"POST /api/v1/registrations/redeem", s.auth(s.redeem)},
+		{"POST /api/v1/subscribers/resolve", s.auth(s.resolveToken)},
+		{"GET /api/v1/subscribers/{telegram_id}", s.auth(s.getSubscriber)},
+	}
+}
+
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /healthz", s.health)
-	mux.Handle("POST /api/v1/messages", s.auth(s.sendMessage))
-	mux.Handle("GET /api/v1/messages/{id}", s.auth(s.getMessage))
-	mux.Handle("POST /api/v1/registration-links", s.auth(s.createLink))
-	mux.Handle("POST /api/v1/registrations/redeem", s.auth(s.redeem))
-	mux.Handle("POST /api/v1/subscribers/resolve", s.auth(s.resolveToken))
-	mux.Handle("GET /api/v1/subscribers/{telegram_id}", s.auth(s.getSubscriber))
-	return s.logRequests(http.TimeoutHandler(mux, requestTimeout, `{"error":"timeout"}`))
+	for _, r := range s.routes() {
+		mux.Handle(r.pattern, r.handler)
+	}
+	return s.logRequests(docs.Wrap(http.TimeoutHandler(mux, requestTimeout, `{"error":"timeout"}`)))
 }
 
 // --- handlers ---
