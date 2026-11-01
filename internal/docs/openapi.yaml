@@ -9,7 +9,7 @@ info:
   version: "0.1.0"
   description: |
     REST API Telegram-бота алертинга. Служба регистрирует своих пользователей через
-    подписанную ссылку и отправляет им сообщения по Telegram ID.
+    подписанную ссылку и отправляет им сообщения по токену или псевдониму получателя.
 
     ## Авторизация
 
@@ -68,6 +68,7 @@ paths:
     post:
       tags: [messages]
       summary: Поставить сообщение в очередь
+      description: Получатель задаётся ровно одним из полей `token` или `alias`.
       operationId: sendMessage
       requestBody:
         required: true
@@ -75,10 +76,19 @@ paths:
           application/json:
             schema:
               $ref: "#/components/schemas/SendMessageRequest"
-            example:
-              telegram_id: 123456789
-              text: "<b>CPU 98%</b> on db-1"
-              parse_mode: HTML
+            examples:
+              alias:
+                summary: По псевдониму
+                value:
+                  alias: ops
+                  text: "<b>CPU 98%</b> on db-1"
+                  parse_mode: HTML
+              token:
+                summary: По токену
+                value:
+                  token: 3fa85f64-5717-4562-b3fc-2c963f66afa6
+                  text: "<b>CPU 98%</b> on db-1"
+                  parse_mode: HTML
       responses:
         "202":
           description: Сообщение в очереди
@@ -96,14 +106,6 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
-        "403":
-          description: Поле `token` не совпадает с токеном подписчика
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
-              example:
-                error: token does not match subscriber
         "404":
           $ref: "#/components/responses/SubscriberNotFound"
         "409":
@@ -316,7 +318,7 @@ components:
           schema:
             $ref: "#/components/schemas/Error"
           example:
-            error: telegram_id is required
+            error: text is required
     Unauthorized:
       description: Токен не передан или неверен
       content:
@@ -353,17 +355,19 @@ components:
     SendMessageRequest:
       type: object
       additionalProperties: false
-      required: [telegram_id, text]
+      required: [text]
+      oneOf:
+        - required: [token]
+        - required: [alias]
       properties:
-        telegram_id:
-          type: integer
-          format: int64
-          description: Telegram ID подписчика, не 0
-          example: 123456789
         token:
           type: string
           format: uuid
-          description: Необязательная проверка, что получатель именно тот, кого ожидает служба
+          description: Токен получателя, колонка `recipients.token`
+        alias:
+          type: string
+          description: Псевдоним получателя, колонка `recipients.alias`
+          example: ops
         text:
           type: string
           maxLength: 4096

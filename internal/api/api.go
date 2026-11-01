@@ -35,6 +35,7 @@ type Store interface {
 	Ping(ctx context.Context) error
 	SubscriberByTelegramID(ctx context.Context, telegramID int64) (storage.Subscriber, error)
 	SubscriberByToken(ctx context.Context, token uuid.UUID) (storage.Subscriber, error)
+	SubscriberByAlias(ctx context.Context, alias string) (storage.Subscriber, error)
 	RedeemCallbackCode(ctx context.Context, codeHash []byte) (storage.Subscriber, []byte, error)
 	EnqueueMessage(ctx context.Context, m storage.NewMessage) (int64, error)
 	MessageByID(ctx context.Context, id int64) (storage.Message, error)
@@ -111,9 +112,9 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 }
 
 type sendMessageRequest struct {
-	TelegramID int64 `json:"telegram_id"`
-	// Token — необязательная дополнительная проверка, что получатель тот, кого служба ожидает.
+	// Token и Alias задают получателя: нужно ровно одно из этих полей.
 	Token               string `json:"token,omitempty"`
+	Alias               string `json:"alias,omitempty"`
 	Text                string `json:"text"`
 	ParseMode           string `json:"parse_mode,omitempty"`
 	DisableNotification bool   `json:"disable_notification,omitempty"`
@@ -133,8 +134,8 @@ func (s *Server) sendMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch {
-	case req.TelegramID == 0:
-		writeError(w, http.StatusBadRequest, "telegram_id is required")
+	case (req.Token == "") == (req.Alias == ""):
+		writeError(w, http.StatusBadRequest, "exactly one of token or alias is required")
 		return
 	case strings.TrimSpace(req.Text) == "":
 		writeError(w, http.StatusBadRequest, "text is required")
@@ -151,16 +152,9 @@ func (s *Server) sendMessage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := r.Context()
-	sub, ok := s.lookup(w, ctx, req.TelegramID)
+	sub, ok := s.findRecipient(w, ctx, req)
 	if !ok {
 		return
-	}
-	if req.Token != "" {
-		token, err := uuid.Parse(req.Token)
-		if err != nil || token != sub.Token {
-			writeError(w, http.StatusForbidden, "token does not match subscriber")
-			return
-		}
 	}
 	if sub.Status != storage.StatusActive {
 		writeError(w, http.StatusConflict, "subscriber is "+sub.Status)
@@ -376,6 +370,26 @@ func (s *Server) getSubscriber(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) lookup(w http.ResponseWriter, ctx context.Context, telegramID int64) (storage.Subscriber, bool) {
 	sub, err := s.store.SubscriberByTelegramID(ctx, telegramID)
+	return s.loaded(w, sub, err)
+}
+
+// findRecipient ищет получателя сообщения по токену или псевдониму.
+func (s *Server) findRecipient(w http.ResponseWriter, ctx context.Context, req sendMessageRequest) (storage.Subscriber, bool) {
+	if req.Token == "" {
+		sub, err := s.store.SubscriberByAlias(ctx, req.Alias)
+		return s.loaded(w, sub, err)
+	}
+	token, err := uuid.Parse(strings.TrimSpace(req.Token))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "token must be a UUID")
+		return storage.Subscriber{}, false
+	}
+	sub, err := s.store.SubscriberByToken(ctx, token)
+	return s.loaded(w, sub, err)
+}
+
+// loaded отвечает ошибкой, если подписчика не удалось загрузить.
+func (s *Server) loaded(w http.ResponseWriter, sub storage.Subscriber, err error) (storage.Subscriber, bool) {
 	if errors.Is(err, storage.ErrNotFound) {
 		writeError(w, http.StatusNotFound, "subscriber not found")
 		return sub, false

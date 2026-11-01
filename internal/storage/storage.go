@@ -216,6 +216,11 @@ func (s *Store) SubscriberByToken(ctx context.Context, token uuid.UUID) (Subscri
 		`SELECT `+subscriberColumns+` FROM recipients WHERE token = $1`, token))
 }
 
+func (s *Store) SubscriberByAlias(ctx context.Context, alias string) (Subscriber, error) {
+	return scanSubscriber(s.pool.QueryRow(ctx,
+		`SELECT `+subscriberColumns+` FROM recipients WHERE alias = $1`, alias))
+}
+
 // SetStatus меняет статус подписчика и пишет событие status_changed.
 func (s *Store) SetStatus(ctx context.Context, subscriberID int64, status, reason string) error {
 	tx, err := s.pool.Begin(ctx)

@@ -3,7 +3,7 @@
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 Telegram alerting bot in Go. Services register their users through a signed `/start` link and send
-them messages by Telegram ID over a REST API. Data lives in PostgreSQL. [README.md](README.md) covers
+them messages by recipient token or alias over a REST API. Data lives in PostgreSQL. [README.md](README.md) covers
 the registration flow, the API and the queue; [deploy/DEPLOY.md](deploy/DEPLOY.md) covers production.
 
 Code comments, docs, the OpenAPI spec and bot texts are in Russian. Log messages and API error

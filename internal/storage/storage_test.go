@@ -366,6 +366,25 @@ func TestRegisterKeepsManualRecipient(t *testing.T) {
 	}
 }
 
+func TestSubscriberByAlias(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	if _, err := s.pool.Exec(ctx, `INSERT INTO recipients (tg_id, alias)
+		VALUES (1, 'ops'), (2, NULL), (3, NULL)`); err != nil {
+		t.Fatal(err)
+	}
+	if sub, err := s.SubscriberByAlias(ctx, "ops"); err != nil || sub.TelegramID != 1 {
+		t.Fatalf("by alias %+v, err %v", sub, err)
+	}
+	if _, err := s.SubscriberByAlias(ctx, "absent"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("got %v, want ErrNotFound", err)
+	}
+	if _, err := s.pool.Exec(ctx, `INSERT INTO recipients (tg_id, alias) VALUES (4, 'ops')`); err == nil {
+		t.Fatal("duplicate alias must be rejected")
+	}
+}
+
 func TestAddRecipient(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()

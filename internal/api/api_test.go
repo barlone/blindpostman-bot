@@ -17,7 +17,10 @@ import (
 	"github.com/blind-postman/blind-postman/pkg/startlink"
 )
 
-const testAPIKey = "test-api-key-0123456789"
+const (
+	testAPIKey = "test-api-key-0123456789"
+	testAlias  = "ops" // псевдоним подписчика 100 в fakeStore
+)
 
 var testSecret = []byte("0123456789abcdef0123456789abcdef")
 
@@ -50,6 +53,13 @@ func (f *fakeStore) SubscriberByToken(_ context.Context, t uuid.UUID) (storage.S
 		}
 	}
 	return storage.Subscriber{}, storage.ErrNotFound
+}
+
+func (f *fakeStore) SubscriberByAlias(ctx context.Context, alias string) (storage.Subscriber, error) {
+	if alias != testAlias {
+		return storage.Subscriber{}, storage.ErrNotFound
+	}
+	return f.SubscriberByTelegramID(ctx, 100)
 }
 
 func (f *fakeStore) RedeemCallbackCode(context.Context, []byte) (storage.Subscriber, []byte, error) {
@@ -113,13 +123,17 @@ func TestSendMessage(t *testing.T) {
 		body     string
 		wantCode int
 	}{
-		{"queued", `{"telegram_id":100,"text":"disk full"}`, http.StatusAccepted},
-		{"token match", `{"telegram_id":100,"text":"x","token":"` + sub.Token.String() + `"}`, http.StatusAccepted},
-		{"token mismatch", `{"telegram_id":100,"text":"x","token":"` + uuid.NewString() + `"}`, http.StatusForbidden},
-		{"unknown subscriber", `{"telegram_id":999,"text":"x"}`, http.StatusNotFound},
-		{"empty text", `{"telegram_id":100,"text":" "}`, http.StatusBadRequest},
-		{"bad parse mode", `{"telegram_id":100,"text":"x","parse_mode":"bbcode"}`, http.StatusBadRequest},
-		{"negative ttl", `{"telegram_id":100,"text":"x","ttl_seconds":-1}`, http.StatusBadRequest},
+		{"by alias", `{"alias":"ops","text":"disk full"}`, http.StatusAccepted},
+		{"by token", `{"token":"` + sub.Token.String() + `","text":"disk full"}`, http.StatusAccepted},
+		{"token and alias", `{"token":"` + sub.Token.String() + `","alias":"ops","text":"x"}`, http.StatusBadRequest},
+		{"no recipient", `{"text":"x"}`, http.StatusBadRequest},
+		{"telegram id is not accepted", `{"telegram_id":100,"text":"x"}`, http.StatusBadRequest},
+		{"bad token", `{"token":"nope","text":"x"}`, http.StatusBadRequest},
+		{"unknown token", `{"token":"` + uuid.NewString() + `","text":"x"}`, http.StatusNotFound},
+		{"unknown alias", `{"alias":"absent","text":"x"}`, http.StatusNotFound},
+		{"empty text", `{"alias":"ops","text":" "}`, http.StatusBadRequest},
+		{"bad parse mode", `{"alias":"ops","text":"x","parse_mode":"bbcode"}`, http.StatusBadRequest},
+		{"negative ttl", `{"alias":"ops","text":"x","ttl_seconds":-1}`, http.StatusBadRequest},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -132,6 +146,9 @@ func TestSendMessage(t *testing.T) {
 			if got := len(store.messages) == 1; got != queued {
 				t.Fatalf("message queued = %v, want %v", got, queued)
 			}
+			if queued && store.messages[0].SubscriberID != sub.ID {
+				t.Fatalf("message for subscriber %d, want %d", store.messages[0].SubscriberID, sub.ID)
+			}
 		})
 	}
 }
@@ -141,7 +158,7 @@ func TestSendMessageTTL(t *testing.T) {
 	h := newTestServer(store)
 	before := time.Now()
 
-	rec := do(t, h, "POST", "/api/v1/messages", `{"telegram_id":100,"text":"x","ttl_seconds":60}`, testAPIKey)
+	rec := do(t, h, "POST", "/api/v1/messages", `{"alias":"ops","text":"x","ttl_seconds":60}`, testAPIKey)
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("got %d: %s", rec.Code, rec.Body)
 	}
@@ -158,7 +175,7 @@ func TestSendToUnsubscribed(t *testing.T) {
 	sub := activeSub()
 	sub.Status = storage.StatusUnsubscribed
 	h := newTestServer(newFakeStore(sub))
-	if rec := do(t, h, "POST", "/api/v1/messages", `{"telegram_id":100,"text":"x"}`, testAPIKey); rec.Code != http.StatusConflict {
+	if rec := do(t, h, "POST", "/api/v1/messages", `{"alias":"ops","text":"x"}`, testAPIKey); rec.Code != http.StatusConflict {
 		t.Fatalf("got %d, want 409", rec.Code)
 	}
 }
@@ -166,7 +183,7 @@ func TestSendToUnsubscribed(t *testing.T) {
 func TestGetMessage(t *testing.T) {
 	store := newFakeStore(activeSub())
 	h := newTestServer(store)
-	do(t, h, "POST", "/api/v1/messages", `{"telegram_id":100,"text":"x"}`, testAPIKey)
+	do(t, h, "POST", "/api/v1/messages", `{"alias":"ops","text":"x"}`, testAPIKey)
 
 	if rec := do(t, h, "GET", "/api/v1/messages/1", "", testAPIKey); rec.Code != http.StatusOK {
 		t.Fatalf("got %d: %s", rec.Code, rec.Body)
