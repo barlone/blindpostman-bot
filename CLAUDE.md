@@ -26,6 +26,8 @@ go run ./cmd/migrate status                             # also: create NAME, ver
   `TEST_DATABASE_URL="postgres://postman:postman@localhost:5432/postman?sslmode=disable" go test ./internal/storage -v`.
   So the real queue SQL is not exercised by a plain `go test ./...`.
 - `go test -race` does not work on the Windows dev machine: it has no C compiler.
+- With `core.autocrlf=true`, `gofmt -l` also lists files git checked out with CRLF. Check one with
+  `tr -d '\r' < file.go | gofmt -l`.
 - There is no linter config and no Makefile.
 
 ## Architecture
@@ -61,8 +63,10 @@ truncated HMAC-SHA256 of `link_shared_secret`), 40 characters of base64url. It i
 services, so changing the format breaks links they generate themselves. One-time use is enforced by
 `registration_nonces`. Callback codes are stored only as SHA-256 hashes.
 
-`recipients` is separate from `subscribers`: the bot only reads it at startup and logs it. The API
-sends to `subscribers` only, so a row in `recipients` does not make someone reachable.
+`recipients` is the only list of subscribed users. The link is just one way in, for partner systems
+that know the shared secret; a row can also be inserted by hand, so never make the link a requirement.
+The Go type `Subscriber`, the `subscriber_id` columns and the `/api/v1/subscribers` paths all refer to
+this table.
 
 ### Configuration
 

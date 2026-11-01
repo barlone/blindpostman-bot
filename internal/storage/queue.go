@@ -14,7 +14,7 @@ import (
 // Гарантии:
 //   - сообщения одному подписчику уходят строго по порядку и по одному: забирается только
 //     «голова» очереди подписчика и только если она не в работе;
-//   - между сообщениями в один чат выдерживается chatInterval (по subscribers.last_sent_at),
+//   - между сообщениями в один чат выдерживается chatInterval (по recipients.last_sent_at),
 //     в том числе между несколькими репликами;
 //   - аренда (locked_until) защищает от двойной обработки; если воркер упал, после её истечения
 //     сообщение заберут снова. Доставка — at-least-once.
@@ -68,9 +68,9 @@ type Message struct {
 func (s *Store) MessageByID(ctx context.Context, id int64) (Message, error) {
 	var m Message
 	err := s.pool.QueryRow(ctx, `
-		SELECT m.id, s.telegram_id, m.status, m.attempts, m.error, m.tg_message_id,
+		SELECT m.id, s.tg_id, m.status, m.attempts, m.error, m.tg_message_id,
 		       m.created_at, m.next_attempt_at, m.sent_at, m.expires_at
-		FROM messages m JOIN subscribers s ON s.id = m.subscriber_id
+		FROM messages m JOIN recipients s ON s.id = m.subscriber_id
 		WHERE m.id = $1`, id).Scan(&m.ID, &m.TelegramID, &m.Status, &m.Attempts, &m.Error,
 		&m.TelegramMessageID, &m.CreatedAt, &m.NextAttemptAt, &m.SentAt, &m.ExpiresAt)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -105,7 +105,7 @@ func (s *Store) ClaimMessages(ctx context.Context, limit int, lease, chatInterva
 			SELECT m.id
 			FROM messages m
 			JOIN heads h ON h.id = m.id
-			JOIN subscribers s ON s.id = m.subscriber_id
+			JOIN recipients s ON s.id = m.subscriber_id
 			WHERE m.status = 'pending'
 			  AND m.next_attempt_at <= now()
 			  AND (m.locked_until IS NULL OR m.locked_until < now())
@@ -118,9 +118,9 @@ func (s *Store) ClaimMessages(ctx context.Context, limit int, lease, chatInterva
 		SET attempts     = m.attempts + 1,
 		    locked_until = now() + $3::bigint * interval '1 millisecond',
 		    updated_at   = now()
-		FROM claimable c, subscribers s
+		FROM claimable c, recipients s
 		WHERE m.id = c.id AND s.id = m.subscriber_id
-		RETURNING m.id, m.subscriber_id, s.telegram_id, s.status, m.text, m.parse_mode,
+		RETURNING m.id, m.subscriber_id, s.tg_id, s.status, m.text, m.parse_mode,
 		          m.disable_notification, m.attempts, m.expires_at`,
 		limit, chatInterval.Milliseconds(), lease.Milliseconds())
 	if err != nil {
@@ -149,7 +149,7 @@ func (s *Store) CompleteMessage(ctx context.Context, m ClaimedMessage, tgMessage
 		WHERE id = $1`, m.ID, tgMessageID); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(ctx, `UPDATE subscribers SET last_sent_at = now() WHERE id = $1`,
+	if _, err := tx.Exec(ctx, `UPDATE recipients SET last_sent_at = now() WHERE id = $1`,
 		m.SubscriberID); err != nil {
 		return err
 	}

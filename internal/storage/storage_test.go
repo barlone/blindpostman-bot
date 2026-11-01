@@ -290,7 +290,7 @@ func TestRecipients(t *testing.T) {
 
 	token := uuid.New()
 	if _, err := s.pool.Exec(ctx, `INSERT INTO recipients (tg_id, token, alias)
-		VALUES (1, $1, NULL), (2, $1, 'ops')`, token); err != nil {
+		VALUES (1, $1, NULL), (2, $2, 'ops')`, token, uuid.New()); err != nil {
 		t.Fatal(err)
 	}
 
@@ -307,6 +307,164 @@ func TestRecipients(t *testing.T) {
 	if got[1].Alias == nil || *got[1].Alias != "ops" {
 		t.Fatalf("unexpected second recipient: %+v", got[1])
 	}
+}
+
+func TestManualRecipientIsSubscribed(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	token := uuid.New()
+	if _, err := s.pool.Exec(ctx, `INSERT INTO recipients (tg_id, token, alias)
+		VALUES (1, $1, 'ops')`, token); err != nil {
+		t.Fatal(err)
+	}
+	sub, err := s.SubscriberByTelegramID(ctx, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sub.Status != StatusActive || sub.Token != token {
+		t.Fatalf("manual recipient %+v", sub)
+	}
+
+	id := enqueue(t, s, sub, "alert")
+	if got := claimIDs(t, s, 0); !sameIDs(got, id) {
+		t.Fatalf("claimed %v, want [%d]", got, id)
+	}
+	if m, err := s.MessageByID(ctx, id); err != nil || m.TelegramID != 1 {
+		t.Fatalf("message %+v, err %v", m, err)
+	}
+
+	// Токен для ручного добавления необязателен.
+	if _, err := s.pool.Exec(ctx, `INSERT INTO recipients (tg_id) VALUES (2)`); err != nil {
+		t.Fatal(err)
+	}
+	if sub, err := s.SubscriberByTelegramID(ctx, 2); err != nil || sub.Token == uuid.Nil {
+		t.Fatalf("recipient without token %+v, err %v", sub, err)
+	}
+}
+
+func TestRegisterKeepsManualRecipient(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	token := uuid.New()
+	if _, err := s.pool.Exec(ctx, `INSERT INTO recipients (tg_id, token, alias, status)
+		VALUES (1, $1, 'ops', 'unsubscribed')`, token); err != nil {
+		t.Fatal(err)
+	}
+
+	sub := register(t, s, 1, "n")
+	if sub.Token != token || sub.Status != StatusActive || sub.Username != "u" {
+		t.Fatalf("registered %+v", sub)
+	}
+	got, err := s.Recipients(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Alias == nil || *got[0].Alias != "ops" {
+		t.Fatalf("recipients after registration: %+v", got)
+	}
+}
+
+func TestSubscribersMergeIntoRecipients(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	migrate := func(fn func(p *goose.Provider) error) {
+		t.Helper()
+		if err := s.WithMigrations(ctx, fn); err != nil {
+			t.Fatal(err)
+		}
+	}
+	migrate(func(p *goose.Provider) error {
+		_, err := p.DownTo(ctx, 3)
+		return err
+	})
+
+	// Получатель 1 есть в обеих таблицах, 2 — только в subscribers, 3 — только в recipients.
+	listed := uuid.New()
+	if _, err := s.pool.Exec(ctx, `INSERT INTO recipients (tg_id, token, alias)
+		VALUES (1, $1, 'ops'), (3, $2, NULL)`, listed, uuid.New()); err != nil {
+		t.Fatal(err)
+	}
+	var both, only int64
+	insert := `INSERT INTO subscribers (telegram_id, username, auth_token, status)
+		VALUES ($1, $2, $3, $4) RETURNING id`
+	// Идентификатор строки subscribers намеренно не совпадает с её будущим id в recipients.
+	if err := s.pool.QueryRow(ctx, insert, 2, "two", uuid.New(), StatusBlocked).Scan(&only); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.pool.QueryRow(ctx, insert, 1, "one", uuid.New(), StatusActive).Scan(&both); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.pool.Exec(ctx, `INSERT INTO messages (subscriber_id, text, status)
+		VALUES ($1, 'for one', 'sent'), ($2, 'for two', 'failed')`, both, only); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.pool.Exec(ctx, `INSERT INTO events (subscriber_id, kind) VALUES ($1, 'registered')`, both); err != nil {
+		t.Fatal(err)
+	}
+
+	migrate(func(p *goose.Provider) error {
+		_, err := p.Up(ctx)
+		return err
+	})
+
+	one, err := s.SubscriberByTelegramID(ctx, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if one.Token != listed || one.Username != "one" {
+		t.Fatalf("recipient 1 %+v", one)
+	}
+	two, err := s.SubscriberByTelegramID(ctx, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if two.Status != StatusBlocked || two.Username != "two" {
+		t.Fatalf("recipient 2 %+v", two)
+	}
+	if _, err := s.SubscriberByTelegramID(ctx, 3); err != nil {
+		t.Fatal(err)
+	}
+
+	var owner int64
+	if err := s.pool.QueryRow(ctx, `SELECT subscriber_id FROM messages WHERE text = 'for one'`).Scan(&owner); err != nil {
+		t.Fatal(err)
+	}
+	if owner != one.ID {
+		t.Errorf("message for 1 belongs to %d, want %d", owner, one.ID)
+	}
+	if err := s.pool.QueryRow(ctx, `SELECT subscriber_id FROM messages WHERE text = 'for two'`).Scan(&owner); err != nil {
+		t.Fatal(err)
+	}
+	if owner != two.ID {
+		t.Errorf("message for 2 belongs to %d, want %d", owner, two.ID)
+	}
+	if err := s.pool.QueryRow(ctx, `SELECT subscriber_id FROM events`).Scan(&owner); err != nil {
+		t.Fatal(err)
+	}
+	if owner != one.ID {
+		t.Errorf("event belongs to %d, want %d", owner, one.ID)
+	}
+
+	// Откат сохраняет получателей и связанные с ними строки.
+	migrate(func(p *goose.Provider) error {
+		_, err := p.DownTo(ctx, 3)
+		return err
+	})
+	var telegramID int64
+	if err := s.pool.QueryRow(ctx, `SELECT s.telegram_id FROM messages m
+		JOIN subscribers s ON s.id = m.subscriber_id WHERE m.text = 'for two'`).Scan(&telegramID); err != nil {
+		t.Fatal(err)
+	}
+	if telegramID != 2 {
+		t.Errorf("after rollback message for 2 belongs to telegram id %d", telegramID)
+	}
+	migrate(func(p *goose.Provider) error {
+		_, err := p.Up(ctx)
+		return err
+	})
 }
 
 func TestMigrationsDownAndUp(t *testing.T) {
@@ -336,6 +494,12 @@ func TestAdoptLegacyMigrations(t *testing.T) {
 	ctx := context.Background()
 
 	// Состояние базы, которую вёл прежний механизм миграций.
+	if err := s.WithMigrations(ctx, func(p *goose.Provider) error {
+		_, err := p.DownTo(ctx, 3)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := s.pool.Exec(ctx, `
 		DROP TABLE goose_db_version;
 		CREATE TABLE schema_migrations (
