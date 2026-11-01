@@ -155,12 +155,19 @@ curl -X POST localhost:8080/api/v1/registration-links \
 меняют: любое изменение схемы оформляется новой миграцией.
 
 ```bash
-go run ./cmd/migrate create add_something  # создать файл новой миграции
-go run ./cmd/migrate status                # показать состояние миграций
-go run ./cmd/migrate version               # показать текущую версию
-go run ./cmd/migrate up                    # применить новые миграции
-go run ./cmd/migrate down                  # откатить последнюю
-go run ./cmd/migrate down-to 2             # откатить до версии 2
+./blindpostman-bot migrate status      # показать состояние миграций
+./blindpostman-bot migrate version     # показать текущую версию
+./blindpostman-bot migrate up          # применить новые миграции
+./blindpostman-bot migrate down        # откатить последнюю
+./blindpostman-bot migrate down-to 2   # откатить до версии 2
+```
+
+Другой файл настроек указывается перед командой:
+`./blindpostman-bot -config /path/config.ini migrate status`. Из исходников вместо бинарника
+работает `go run ./cmd/blind-postman migrate status`. Новая миграция создаётся из корня репозитория:
+
+```bash
+go run ./cmd/blind-postman migrate create add_something
 ```
 
 После отката запускайте версию приложения без откаченных миграций: текущая применит их снова

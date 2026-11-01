@@ -18,7 +18,7 @@ go vet ./...
 gofmt -l cmd internal pkg
 go run ./cmd/blind-postman [-config path]               # needs config.ini, PostgreSQL and Telegram
 go run ./cmd/genlink -bot my_alert_bot -mode token -ttl 1h
-go run ./cmd/migrate status                             # also: create NAME, version, up, down, down-to N
+go run ./cmd/blind-postman migrate status               # also: create NAME, version, up, down, down-to N
 ./3_build-app.sh                                        # blindpostman-bot, static Linux x86-64
 ```
 

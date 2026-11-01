@@ -1,10 +1,10 @@
-// Команда migrate управляет версиями схемы базы данных. Запускается из корня репозитория.
-package main
+// Package migrate — команды управления версиями схемы базы данных. Они встроены в основной
+// бинарник, поэтому работают на сервере без Go и исходников.
+package migrate
 
 import (
 	"context"
 	"errors"
-	"flag"
 	"fmt"
 	"os"
 	"os/signal"
@@ -19,34 +19,21 @@ import (
 
 const migrationsDir = "internal/storage/migrations"
 
-const usage = `использование: migrate [-config файл] команда
-
+// Usage перечисляет команды migrate.
+const Usage = `команды migrate:
   status        показать все миграции и их состояние
   version       показать текущую версию схемы
   up            применить все новые миграции
   up-to N       применить миграции до версии N
   down          откатить последнюю миграцию
   down-to N     откатить миграции до версии N (0 — откатить всё)
-  create ИМЯ    создать файл новой миграции
+  create ИМЯ    создать файл новой миграции (только из корня репозитория)
 `
 
-func main() {
-	configPath := flag.String("config", config.DefaultPath, "путь к файлу настроек")
-	flag.Usage = func() {
-		fmt.Fprint(os.Stderr, usage)
-		flag.PrintDefaults()
-	}
-	flag.Parse()
-
-	if err := run(*configPath, flag.Args()); err != nil {
-		fmt.Fprintln(os.Stderr, "migrate:", err)
-		os.Exit(1)
-	}
-}
-
-func run(configPath string, args []string) error {
+// Run выполняет команду args[0] с аргументами args[1:].
+func Run(configPath string, args []string) error {
 	if len(args) == 0 {
-		flag.Usage()
+		fmt.Fprint(os.Stderr, Usage)
 		return errors.New("не указана команда")
 	}
 	command, args := args[0], args[1:]
@@ -55,6 +42,9 @@ func run(configPath string, args []string) error {
 	if command == "create" {
 		if len(args) != 1 {
 			return errors.New("create: укажите имя миграции")
+		}
+		if _, err := os.Stat(migrationsDir); err != nil {
+			return errors.New("create: запускайте из корня репозитория")
 		}
 		goose.SetSequential(true)
 		return goose.Create(nil, migrationsDir, args[0], "sql")

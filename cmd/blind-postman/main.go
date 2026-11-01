@@ -1,33 +1,65 @@
-// Команда blind-postman — Telegram-бот алертинга с REST API.
+// Команда blind-postman — Telegram-бот алертинга с REST API. С командой migrate вместо запуска
+// бота управляет версиями схемы базы данных.
 package main
 
 import (
 	"context"
 	"errors"
 	"flag"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
 	"github.com/blind-postman/blind-postman/internal/api"
 	"github.com/blind-postman/blind-postman/internal/config"
 	"github.com/blind-postman/blind-postman/internal/delivery"
+	"github.com/blind-postman/blind-postman/internal/migrate"
 	"github.com/blind-postman/blind-postman/internal/storage"
 	"github.com/blind-postman/blind-postman/internal/tgbot"
 )
 
+const usage = `использование:
+  %[1]s [-config файл]                  запустить бота
+  %[1]s [-config файл] migrate команда  управлять схемой базы данных
+
+`
+
 func main() {
 	configPath := flag.String("config", config.DefaultPath, "путь к файлу настроек")
+	flag.Usage = func() {
+		fmt.Fprintf(os.Stderr, usage, filepath.Base(os.Args[0]))
+		fmt.Fprint(os.Stderr, migrate.Usage, "\n")
+		flag.PrintDefaults()
+	}
 	flag.Parse()
+
+	if args := flag.Args(); len(args) > 0 {
+		os.Exit(runCommand(*configPath, args))
+	}
 
 	log := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	if err := run(*configPath, log); err != nil {
 		log.Error("fatal", "err", err)
 		os.Exit(1)
 	}
+}
+
+func runCommand(configPath string, args []string) int {
+	if args[0] != "migrate" {
+		fmt.Fprintf(os.Stderr, "неизвестная команда %q\n\n", args[0])
+		flag.Usage()
+		return 2
+	}
+	if err := migrate.Run(configPath, args[1:]); err != nil {
+		fmt.Fprintln(os.Stderr, "migrate:", err)
+		return 1
+	}
+	return 0
 }
 
 func run(configPath string, log *slog.Logger) error {

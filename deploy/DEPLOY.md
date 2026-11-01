@@ -126,12 +126,37 @@ install -o root -g root -m 0755 blindpostman-bot.prev blindpostman-bot
 systemctl restart blindpostman-bot
 ```
 
-Схема базы при этом не откатывается. Если новая версия применила несовместимую миграцию, откатите
-её с машины разработчика до запуска старой версии:
+Схема базы при этом не откатывается. Если новая версия применила несовместимую миграцию, сначала
+откатите её текущим бинарником, потому что в предыдущей версии этой миграции ещё нет. Служба на это
+время должна быть остановлена: иначе она продолжит обращаться к изменившимся таблицам, а при
+перезапуске применит миграцию снова.
 
 ```bash
-go run ./cmd/migrate -config config.ini down
+cd /opt/blindpostman-bot
+systemctl stop blindpostman-bot
+./blindpostman-bot -config config.ini migrate status
+./blindpostman-bot -config config.ini migrate down
+install -o root -g root -m 0755 blindpostman-bot.prev blindpostman-bot
+systemctl start blindpostman-bot
 ```
+
+`migrate down` откатывает одну миграцию, `migrate down-to N` — все до версии `N`.
+
+## Миграции
+
+Миграции встроены в бинарник и применяются при старте службы, поэтому обычно запускать их вручную
+не нужно. Команды `migrate` работают с той же базой из `config.ini` и не запускают бота:
+
+```bash
+cd /opt/blindpostman-bot
+./blindpostman-bot -config config.ini migrate status
+./blindpostman-bot -config config.ini migrate version
+./blindpostman-bot -config config.ini migrate up
+./blindpostman-bot -config config.ini migrate down
+./blindpostman-bot -config config.ini migrate down-to 4
+```
+
+Файл `config.ini` доступен только `root` и группе `blindpostman`, поэтому запускайте их под `root`.
 
 ## Nginx
 
