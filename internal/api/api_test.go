@@ -20,6 +20,7 @@ import (
 const (
 	testAPIKey = "test-api-key-0123456789"
 	testAlias  = "ops" // псевдоним подписчика 100 в fakeStore
+	testGroup  = "oncall"
 )
 
 var testSecret = []byte("0123456789abcdef0123456789abcdef")
@@ -69,6 +70,20 @@ func (f *fakeStore) RedeemCallbackCode(context.Context, []byte) (storage.Subscri
 func (f *fakeStore) EnqueueMessage(_ context.Context, m storage.NewMessage) (int64, error) {
 	f.messages = append(f.messages, m)
 	return int64(len(f.messages)), nil
+}
+
+// EnqueueGroupMessage ведёт себя как группа testGroup из двух активных участников и группа
+// "nobody" без активных; состав групп проверяют тесты storage.
+func (f *fakeStore) EnqueueGroupMessage(ctx context.Context, alias string, m storage.NewMessage) ([]int64, error) {
+	switch alias {
+	case testGroup:
+		first, _ := f.EnqueueMessage(ctx, m)
+		second, _ := f.EnqueueMessage(ctx, m)
+		return []int64{first, second}, nil
+	case "nobody":
+		return nil, storage.ErrGroupEmpty
+	}
+	return nil, storage.ErrNotFound
 }
 
 func (f *fakeStore) MessageByID(_ context.Context, id int64) (storage.Message, error) {
@@ -148,6 +163,48 @@ func TestSendMessage(t *testing.T) {
 			}
 			if queued && store.messages[0].SubscriberID != sub.ID {
 				t.Fatalf("message for subscriber %d, want %d", store.messages[0].SubscriberID, sub.ID)
+			}
+		})
+	}
+}
+
+func TestSendToGroup(t *testing.T) {
+	sub := activeSub()
+	tests := []struct {
+		name     string
+		body     string
+		wantCode int
+	}{
+		{"known group", `{"group_alias":"oncall","text":"disk full"}`, http.StatusAccepted},
+		{"unknown group", `{"group_alias":"absent","text":"x"}`, http.StatusNotFound},
+		{"no active members", `{"group_alias":"nobody","text":"x"}`, http.StatusConflict},
+		{"group and alias", `{"group_alias":"oncall","alias":"ops","text":"x"}`, http.StatusBadRequest},
+		{"group and token", `{"group_alias":"oncall","token":"` + sub.Token.String() + `","text":"x"}`, http.StatusBadRequest},
+		{"empty text", `{"group_alias":"oncall","text":" "}`, http.StatusBadRequest},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := newFakeStore(sub)
+			rec := do(t, newTestServer(store), "POST", "/api/v1/messages", tt.body, testAPIKey)
+			if rec.Code != tt.wantCode {
+				t.Fatalf("got %d (%s), want %d", rec.Code, rec.Body, tt.wantCode)
+			}
+			if tt.wantCode != http.StatusAccepted {
+				if len(store.messages) != 0 {
+					t.Fatalf("%d messages queued, want none", len(store.messages))
+				}
+				return
+			}
+
+			var resp sendMessageResponse
+			if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+				t.Fatal(err)
+			}
+			if len(resp.MessageIDs) != 2 || resp.MessageID != 0 || resp.Status != storage.MessagePending || resp.ExpiresAt == nil {
+				t.Errorf("unexpected response %s", rec.Body)
+			}
+			if rec.Header().Get("Location") != "" {
+				t.Errorf("Location = %q, want none", rec.Header().Get("Location"))
 			}
 		})
 	}

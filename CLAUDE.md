@@ -43,7 +43,9 @@ use fakes.
 
 ### Message path
 
-`POST /api/v1/messages` inserts into `messages` and answers `202`. A database trigger sends `NOTIFY`,
+`POST /api/v1/messages` inserts into `messages` and answers `202`. With `group_alias` it inserts one row
+per active group member in a single statement (`EnqueueGroupMessage`), so a retry cannot double part of
+the group. A database trigger sends `NOTIFY`,
 the dispatcher wakes up and claims rows; polling (`queue_poll_interval`) picks up retries. Things to
 keep true when changing `internal/storage/queue.go` or `internal/delivery`:
 

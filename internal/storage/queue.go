@@ -51,6 +51,44 @@ func (s *Store) EnqueueMessage(ctx context.Context, m NewMessage) (int64, error)
 	return id, err
 }
 
+// EnqueueGroupMessage ставит сообщение в очередь каждому активному участнику группы и возвращает
+// ID сообщений; поле SubscriberID не используется. Всё делает один запрос: при сбое не ставится ни
+// одно сообщение, поэтому повтор запроса службой не даст дублей части участников.
+func (s *Store) EnqueueGroupMessage(ctx context.Context, alias string, m NewMessage) ([]int64, error) {
+	var expires *time.Time
+	if !m.ExpiresAt.IsZero() {
+		expires = &m.ExpiresAt
+	}
+	var found bool
+	var ids []int64
+	// Типы параметров заданы явно: в INSERT ... SELECT их нельзя вывести из колонок.
+	err := s.pool.QueryRow(ctx, `
+		WITH target AS (
+			SELECT id FROM recipient_groups WHERE alias = $1
+		), queued AS (
+			INSERT INTO messages (subscriber_id, text, parse_mode, disable_notification, expires_at, status)
+			SELECT r.internal_id, $2::text, $3::text, $4::boolean, $5::timestamptz, 'pending'
+			FROM target t
+			JOIN recipient_group_set gs ON gs.group_id = t.id
+			JOIN recipients r ON r.id = gs.recipient_id
+			WHERE r.status = 'active'
+			ORDER BY r.internal_id
+			RETURNING id
+		)
+		SELECT EXISTS (SELECT 1 FROM target),
+		       COALESCE((SELECT array_agg(id ORDER BY id) FROM queued), '{}'::bigint[])`,
+		alias, m.Text, m.ParseMode, m.DisableNotification, expires).Scan(&found, &ids)
+	switch {
+	case err != nil:
+		return nil, err
+	case !found:
+		return nil, ErrNotFound
+	case len(ids) == 0:
+		return nil, ErrGroupEmpty
+	}
+	return ids, nil
+}
+
 // Message — сообщение со статусом доставки.
 type Message struct {
 	ID                int64

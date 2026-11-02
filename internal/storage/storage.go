@@ -25,6 +25,8 @@ const (
 var (
 	ErrNotFound = errors.New("storage: not found")
 	ErrLinkUsed = errors.New("storage: registration link already used")
+	// ErrGroupEmpty — группа есть, но ни один её участник не активен.
+	ErrGroupEmpty = errors.New("storage: group has no active members")
 )
 
 // Subscriber — получатель из таблицы recipients: добавленный вручную или по ссылке регистрации.

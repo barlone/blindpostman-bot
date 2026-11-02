@@ -691,3 +691,59 @@ func TestRecipientGroups(t *testing.T) {
 		t.Fatalf("group members after deleting recipient: %d", left)
 	}
 }
+
+func TestEnqueueGroupMessage(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	active := register(t, s, 1, "a")
+	another := register(t, s, 2, "b")
+	blocked := register(t, s, 3, "c")
+	outsider := register(t, s, 4, "d")
+	if err := s.SetStatus(ctx, blocked.ID, StatusBlocked, "test"); err != nil {
+		t.Fatal(err)
+	}
+
+	group := uuid.New()
+	if _, err := s.pool.Exec(ctx, `INSERT INTO recipient_groups (id, name, alias)
+		VALUES ($1, 'Дежурные', 'oncall'), ($2, 'Пустая', 'nobody')`, group, uuid.New()); err != nil {
+		t.Fatal(err)
+	}
+	for _, member := range []Subscriber{active, another, blocked} {
+		if _, err := s.pool.Exec(ctx, `INSERT INTO recipient_group_set (group_id, recipient_id)
+			VALUES ($1, $2)`, group, member.Token); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	expires := time.Now().Add(time.Hour)
+	ids, err := s.EnqueueGroupMessage(ctx, "oncall", NewMessage{Text: "x", ParseMode: "HTML", ExpiresAt: expires})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ids) != 2 {
+		t.Fatalf("got %d messages, want one per active member: %v", len(ids), ids)
+	}
+	for _, id := range ids {
+		m, err := s.MessageByID(ctx, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if m.TelegramID == blocked.TelegramID || m.TelegramID == outsider.TelegramID {
+			t.Errorf("message %d went to %d", id, m.TelegramID)
+		}
+		if m.Status != MessagePending || m.ExpiresAt == nil {
+			t.Errorf("message %d: %+v", id, m)
+		}
+	}
+
+	if _, err := s.EnqueueGroupMessage(ctx, "oncall", NewMessage{Text: "no expiry"}); err != nil {
+		t.Fatalf("message without expires_at: %v", err)
+	}
+	if _, err := s.EnqueueGroupMessage(ctx, "absent", NewMessage{Text: "x"}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("unknown group: got %v, want ErrNotFound", err)
+	}
+	if _, err := s.EnqueueGroupMessage(ctx, "nobody", NewMessage{Text: "x"}); !errors.Is(err, ErrGroupEmpty) {
+		t.Fatalf("group without members: got %v, want ErrGroupEmpty", err)
+	}
+}

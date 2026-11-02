@@ -9,7 +9,8 @@ info:
   version: "0.1.0"
   description: |
     REST API Telegram-бота алертинга. Служба регистрирует своих пользователей через
-    подписанную ссылку и отправляет им сообщения по токену или псевдониму получателя.
+    подписанную ссылку и отправляет им сообщения по токену или псевдониму получателя либо
+    по псевдониму группы.
 
     ## Авторизация
 
@@ -69,7 +70,10 @@ paths:
     post:
       tags: [messages]
       summary: Поставить сообщение в очередь
-      description: Получатель задаётся ровно одним из полей `token` или `alias`.
+      description: |
+        Получатель задаётся ровно одним из полей `token`, `alias` или `group_alias`.
+        Сообщение группе ставится в очередь каждому её активному участнику, неактивные
+        пропускаются. Постановка атомарна: при ошибке не ставится ни одно сообщение.
       operationId: sendMessage
       requestBody:
         required: true
@@ -90,12 +94,18 @@ paths:
                   token: 3fa85f64-5717-4562-b3fc-2c963f66afa6
                   text: "<b>CPU 98%</b> on db-1"
                   parse_mode: HTML
+              group:
+                summary: По псевдониму группы
+                value:
+                  group_alias: oncall
+                  text: "<b>CPU 98%</b> on db-1"
+                  parse_mode: HTML
       responses:
         "202":
           description: Сообщение в очереди
           headers:
             Location:
-              description: Адрес статуса сообщения
+              description: Адрес статуса сообщения. Только для одного получателя
               schema:
                 type: string
                 example: /api/v1/messages/17
@@ -108,15 +118,31 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":
-          $ref: "#/components/responses/SubscriberNotFound"
-        "409":
-          description: Подписчик отписался или заблокировал бота
+          description: Получатель или группа не найдены
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
-              example:
-                error: subscriber is blocked
+              examples:
+                subscriber:
+                  value:
+                    error: subscriber not found
+                group:
+                  value:
+                    error: group not found
+        "409":
+          description: Подписчик отписался или заблокировал бота либо в группе нет активных участников
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                subscriber:
+                  value:
+                    error: subscriber is blocked
+                group:
+                  value:
+                    error: group has no active members
         "500":
           $ref: "#/components/responses/InternalError"
 
@@ -360,6 +386,7 @@ components:
       oneOf:
         - required: [token]
         - required: [alias]
+        - required: [group_alias]
       properties:
         token:
           type: string
@@ -369,6 +396,10 @@ components:
           type: string
           description: Псевдоним получателя, колонка `recipients.alias`
           example: ops
+        group_alias:
+          type: string
+          description: Псевдоним группы, колонка `recipient_groups.alias`
+          example: oncall
         text:
           type: string
           maxLength: 4096
@@ -388,12 +419,20 @@ components:
 
     SendMessageResponse:
       type: object
-      required: [message_id, status]
+      required: [status]
       properties:
         message_id:
           type: integer
           format: int64
+          description: Сообщение одному получателю. Нет поля — отправка группе
           example: 17
+        message_ids:
+          type: array
+          items:
+            type: integer
+            format: int64
+          description: Сообщения участникам группы, по одному на активного участника
+          example: [17, 18]
         status:
           type: string
           enum: [pending]

@@ -38,6 +38,7 @@ type Store interface {
 	SubscriberByAlias(ctx context.Context, alias string) (storage.Subscriber, error)
 	RedeemCallbackCode(ctx context.Context, codeHash []byte) (storage.Subscriber, []byte, error)
 	EnqueueMessage(ctx context.Context, m storage.NewMessage) (int64, error)
+	EnqueueGroupMessage(ctx context.Context, alias string, m storage.NewMessage) ([]int64, error)
 	MessageByID(ctx context.Context, id int64) (storage.Message, error)
 }
 
@@ -112,9 +113,10 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 }
 
 type sendMessageRequest struct {
-	// Token и Alias задают получателя: нужно ровно одно из этих полей.
+	// Token, Alias и GroupAlias задают получателя: нужно ровно одно из этих полей.
 	Token               string `json:"token,omitempty"`
 	Alias               string `json:"alias,omitempty"`
+	GroupAlias          string `json:"group_alias,omitempty"`
 	Text                string `json:"text"`
 	ParseMode           string `json:"parse_mode,omitempty"`
 	DisableNotification bool   `json:"disable_notification,omitempty"`
@@ -123,9 +125,11 @@ type sendMessageRequest struct {
 }
 
 type sendMessageResponse struct {
-	MessageID int64      `json:"message_id"`
-	Status    string     `json:"status"`
-	ExpiresAt *time.Time `json:"expires_at,omitempty"`
+	// MessageID — сообщение одному получателю, MessageIDs — по одному на участника группы.
+	MessageID  int64      `json:"message_id,omitempty"`
+	MessageIDs []int64    `json:"message_ids,omitempty"`
+	Status     string     `json:"status"`
+	ExpiresAt  *time.Time `json:"expires_at,omitempty"`
 }
 
 func (s *Server) sendMessage(w http.ResponseWriter, r *http.Request) {
@@ -134,8 +138,8 @@ func (s *Server) sendMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch {
-	case (req.Token == "") == (req.Alias == ""):
-		writeError(w, http.StatusBadRequest, "exactly one of token or alias is required")
+	case recipientFields(req) != 1:
+		writeError(w, http.StatusBadRequest, "exactly one of token, alias or group_alias is required")
 		return
 	case strings.TrimSpace(req.Text) == "":
 		writeError(w, http.StatusBadRequest, "text is required")
@@ -151,18 +155,7 @@ func (s *Server) sendMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx := r.Context()
-	sub, ok := s.findRecipient(w, ctx, req)
-	if !ok {
-		return
-	}
-	if sub.Status != storage.StatusActive {
-		writeError(w, http.StatusConflict, "subscriber is "+sub.Status)
-		return
-	}
-
 	msg := storage.NewMessage{
-		SubscriberID:        sub.ID,
 		Text:                req.Text,
 		ParseMode:           req.ParseMode,
 		DisableNotification: req.DisableNotification,
@@ -177,6 +170,22 @@ func (s *Server) sendMessage(w http.ResponseWriter, r *http.Request) {
 		resp.ExpiresAt = &msg.ExpiresAt
 	}
 
+	ctx := r.Context()
+	if req.GroupAlias != "" {
+		s.sendToGroup(w, ctx, req.GroupAlias, msg, resp)
+		return
+	}
+
+	sub, ok := s.findRecipient(w, ctx, req)
+	if !ok {
+		return
+	}
+	if sub.Status != storage.StatusActive {
+		writeError(w, http.StatusConflict, "subscriber is "+sub.Status)
+		return
+	}
+	msg.SubscriberID = sub.ID
+
 	id, err := s.store.EnqueueMessage(ctx, msg)
 	if err != nil {
 		s.internalError(w, "enqueue message", err)
@@ -185,6 +194,34 @@ func (s *Server) sendMessage(w http.ResponseWriter, r *http.Request) {
 	resp.MessageID = id
 	w.Header().Set("Location", "/api/v1/messages/"+strconv.FormatInt(id, 10))
 	writeJSON(w, http.StatusAccepted, resp)
+}
+
+// sendToGroup ставит сообщение всем активным участникам группы. Заголовка Location нет: сообщений
+// несколько, их статусы доступны по идентификаторам из ответа.
+func (s *Server) sendToGroup(w http.ResponseWriter, ctx context.Context, alias string, msg storage.NewMessage, resp sendMessageResponse) {
+	ids, err := s.store.EnqueueGroupMessage(ctx, alias, msg)
+	switch {
+	case errors.Is(err, storage.ErrNotFound):
+		writeError(w, http.StatusNotFound, "group not found")
+	case errors.Is(err, storage.ErrGroupEmpty):
+		writeError(w, http.StatusConflict, "group has no active members")
+	case err != nil:
+		s.internalError(w, "enqueue group message", err)
+	default:
+		resp.MessageIDs = ids
+		writeJSON(w, http.StatusAccepted, resp)
+	}
+}
+
+// recipientFields считает, сколько полей получателя заполнено в запросе.
+func recipientFields(req sendMessageRequest) int {
+	n := 0
+	for _, field := range []string{req.Token, req.Alias, req.GroupAlias} {
+		if field != "" {
+			n++
+		}
+	}
+	return n
 }
 
 type messageDTO struct {
