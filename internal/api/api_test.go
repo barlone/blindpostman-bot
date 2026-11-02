@@ -23,7 +23,12 @@ const (
 	testGroup  = "oncall"
 )
 
-var testSecret = []byte("0123456789abcdef0123456789abcdef")
+var (
+	testSecret = []byte("0123456789abcdef0123456789abcdef")
+
+	testGroupID  = uuid.MustParse("7c9e6679-7425-40de-944b-e07fc1f90ae7") // идентификатор группы testGroup
+	emptyGroupID = uuid.MustParse("00000000-0000-4000-8000-000000000001") // идентификатор группы "nobody"
+)
 
 type fakeStore struct {
 	subs     map[int64]*storage.Subscriber
@@ -86,6 +91,16 @@ func (f *fakeStore) EnqueueGroupMessage(ctx context.Context, alias string, m sto
 	return nil, storage.ErrNotFound
 }
 
+func (f *fakeStore) EnqueueGroupMessageByID(ctx context.Context, id uuid.UUID, m storage.NewMessage) ([]int64, error) {
+	switch id {
+	case testGroupID:
+		return f.EnqueueGroupMessage(ctx, testGroup, m)
+	case emptyGroupID:
+		return f.EnqueueGroupMessage(ctx, "nobody", m)
+	}
+	return nil, storage.ErrNotFound
+}
+
 func (f *fakeStore) MessageByID(_ context.Context, id int64) (storage.Message, error) {
 	if id < 1 || id > int64(len(f.messages)) {
 		return storage.Message{}, storage.ErrNotFound
@@ -138,17 +153,19 @@ func TestSendMessage(t *testing.T) {
 		body     string
 		wantCode int
 	}{
-		{"by alias", `{"alias":"ops","text":"disk full"}`, http.StatusAccepted},
-		{"by token", `{"token":"` + sub.Token.String() + `","text":"disk full"}`, http.StatusAccepted},
-		{"token and alias", `{"token":"` + sub.Token.String() + `","alias":"ops","text":"x"}`, http.StatusBadRequest},
+		{"by alias", `{"user_alias":"ops","text":"disk full"}`, http.StatusAccepted},
+		{"by id", `{"user_id":"` + sub.Token.String() + `","text":"disk full"}`, http.StatusAccepted},
+		{"id and alias", `{"user_id":"` + sub.Token.String() + `","user_alias":"ops","text":"x"}`, http.StatusBadRequest},
 		{"no recipient", `{"text":"x"}`, http.StatusBadRequest},
 		{"telegram id is not accepted", `{"telegram_id":100,"text":"x"}`, http.StatusBadRequest},
-		{"bad token", `{"token":"nope","text":"x"}`, http.StatusBadRequest},
-		{"unknown token", `{"token":"` + uuid.NewString() + `","text":"x"}`, http.StatusNotFound},
-		{"unknown alias", `{"alias":"absent","text":"x"}`, http.StatusNotFound},
-		{"empty text", `{"alias":"ops","text":" "}`, http.StatusBadRequest},
-		{"bad parse mode", `{"alias":"ops","text":"x","parse_mode":"bbcode"}`, http.StatusBadRequest},
-		{"negative ttl", `{"alias":"ops","text":"x","ttl_seconds":-1}`, http.StatusBadRequest},
+		{"old token field is not accepted", `{"token":"` + sub.Token.String() + `","text":"x"}`, http.StatusBadRequest},
+		{"old alias field is not accepted", `{"alias":"ops","text":"x"}`, http.StatusBadRequest},
+		{"bad id", `{"user_id":"nope","text":"x"}`, http.StatusBadRequest},
+		{"unknown id", `{"user_id":"` + uuid.NewString() + `","text":"x"}`, http.StatusNotFound},
+		{"unknown alias", `{"user_alias":"absent","text":"x"}`, http.StatusNotFound},
+		{"empty text", `{"user_alias":"ops","text":" "}`, http.StatusBadRequest},
+		{"bad parse mode", `{"user_alias":"ops","text":"x","parse_mode":"bbcode"}`, http.StatusBadRequest},
+		{"negative ttl", `{"user_alias":"ops","text":"x","ttl_seconds":-1}`, http.StatusBadRequest},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -175,11 +192,16 @@ func TestSendToGroup(t *testing.T) {
 		body     string
 		wantCode int
 	}{
-		{"known group", `{"group_alias":"oncall","text":"disk full"}`, http.StatusAccepted},
-		{"unknown group", `{"group_alias":"absent","text":"x"}`, http.StatusNotFound},
-		{"no active members", `{"group_alias":"nobody","text":"x"}`, http.StatusConflict},
-		{"group and alias", `{"group_alias":"oncall","alias":"ops","text":"x"}`, http.StatusBadRequest},
-		{"group and token", `{"group_alias":"oncall","token":"` + sub.Token.String() + `","text":"x"}`, http.StatusBadRequest},
+		{"known alias", `{"group_alias":"oncall","text":"disk full"}`, http.StatusAccepted},
+		{"known id", `{"group_id":"` + testGroupID.String() + `","text":"disk full"}`, http.StatusAccepted},
+		{"unknown alias", `{"group_alias":"absent","text":"x"}`, http.StatusNotFound},
+		{"unknown id", `{"group_id":"` + uuid.NewString() + `","text":"x"}`, http.StatusNotFound},
+		{"bad id", `{"group_id":"nope","text":"x"}`, http.StatusBadRequest},
+		{"no active members by alias", `{"group_alias":"nobody","text":"x"}`, http.StatusConflict},
+		{"no active members by id", `{"group_id":"` + emptyGroupID.String() + `","text":"x"}`, http.StatusConflict},
+		{"group id and alias", `{"group_id":"` + testGroupID.String() + `","group_alias":"oncall","text":"x"}`, http.StatusBadRequest},
+		{"group and user alias", `{"group_alias":"oncall","user_alias":"ops","text":"x"}`, http.StatusBadRequest},
+		{"group and user id", `{"group_id":"` + testGroupID.String() + `","user_id":"` + sub.Token.String() + `","text":"x"}`, http.StatusBadRequest},
 		{"empty text", `{"group_alias":"oncall","text":" "}`, http.StatusBadRequest},
 	}
 	for _, tt := range tests {
@@ -215,7 +237,7 @@ func TestSendMessageTTL(t *testing.T) {
 	h := newTestServer(store)
 	before := time.Now()
 
-	rec := do(t, h, "POST", "/api/v1/messages", `{"alias":"ops","text":"x","ttl_seconds":60}`, testAPIKey)
+	rec := do(t, h, "POST", "/api/v1/messages", `{"user_alias":"ops","text":"x","ttl_seconds":60}`, testAPIKey)
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("got %d: %s", rec.Code, rec.Body)
 	}
@@ -232,7 +254,7 @@ func TestSendToUnsubscribed(t *testing.T) {
 	sub := activeSub()
 	sub.Status = storage.StatusUnsubscribed
 	h := newTestServer(newFakeStore(sub))
-	if rec := do(t, h, "POST", "/api/v1/messages", `{"alias":"ops","text":"x"}`, testAPIKey); rec.Code != http.StatusConflict {
+	if rec := do(t, h, "POST", "/api/v1/messages", `{"user_alias":"ops","text":"x"}`, testAPIKey); rec.Code != http.StatusConflict {
 		t.Fatalf("got %d, want 409", rec.Code)
 	}
 }
@@ -240,7 +262,7 @@ func TestSendToUnsubscribed(t *testing.T) {
 func TestGetMessage(t *testing.T) {
 	store := newFakeStore(activeSub())
 	h := newTestServer(store)
-	do(t, h, "POST", "/api/v1/messages", `{"alias":"ops","text":"x"}`, testAPIKey)
+	do(t, h, "POST", "/api/v1/messages", `{"user_alias":"ops","text":"x"}`, testAPIKey)
 
 	if rec := do(t, h, "GET", "/api/v1/messages/1", "", testAPIKey); rec.Code != http.StatusOK {
 		t.Fatalf("got %d: %s", rec.Code, rec.Body)

@@ -39,6 +39,7 @@ type Store interface {
 	RedeemCallbackCode(ctx context.Context, codeHash []byte) (storage.Subscriber, []byte, error)
 	EnqueueMessage(ctx context.Context, m storage.NewMessage) (int64, error)
 	EnqueueGroupMessage(ctx context.Context, alias string, m storage.NewMessage) ([]int64, error)
+	EnqueueGroupMessageByID(ctx context.Context, id uuid.UUID, m storage.NewMessage) ([]int64, error)
 	MessageByID(ctx context.Context, id int64) (storage.Message, error)
 }
 
@@ -113,9 +114,10 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 }
 
 type sendMessageRequest struct {
-	// Token, Alias и GroupAlias задают получателя: нужно ровно одно из этих полей.
-	Token               string `json:"token,omitempty"`
-	Alias               string `json:"alias,omitempty"`
+	// UserID, UserAlias, GroupID и GroupAlias задают получателя: нужно ровно одно из этих полей.
+	UserID              string `json:"user_id,omitempty"`
+	UserAlias           string `json:"user_alias,omitempty"`
+	GroupID             string `json:"group_id,omitempty"`
 	GroupAlias          string `json:"group_alias,omitempty"`
 	Text                string `json:"text"`
 	ParseMode           string `json:"parse_mode,omitempty"`
@@ -139,7 +141,7 @@ func (s *Server) sendMessage(w http.ResponseWriter, r *http.Request) {
 	}
 	switch {
 	case recipientFields(req) != 1:
-		writeError(w, http.StatusBadRequest, "exactly one of token, alias or group_alias is required")
+		writeError(w, http.StatusBadRequest, "exactly one of user_id, user_alias, group_id or group_alias is required")
 		return
 	case strings.TrimSpace(req.Text) == "":
 		writeError(w, http.StatusBadRequest, "text is required")
@@ -171,8 +173,8 @@ func (s *Server) sendMessage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := r.Context()
-	if req.GroupAlias != "" {
-		s.sendToGroup(w, ctx, req.GroupAlias, msg, resp)
+	if req.GroupID != "" || req.GroupAlias != "" {
+		s.sendToGroup(w, ctx, req, msg, resp)
 		return
 	}
 
@@ -198,8 +200,19 @@ func (s *Server) sendMessage(w http.ResponseWriter, r *http.Request) {
 
 // sendToGroup ставит сообщение всем активным участникам группы. Заголовка Location нет: сообщений
 // несколько, их статусы доступны по идентификаторам из ответа.
-func (s *Server) sendToGroup(w http.ResponseWriter, ctx context.Context, alias string, msg storage.NewMessage, resp sendMessageResponse) {
-	ids, err := s.store.EnqueueGroupMessage(ctx, alias, msg)
+func (s *Server) sendToGroup(w http.ResponseWriter, ctx context.Context, req sendMessageRequest, msg storage.NewMessage, resp sendMessageResponse) {
+	var ids []int64
+	var err error
+	if req.GroupAlias != "" {
+		ids, err = s.store.EnqueueGroupMessage(ctx, req.GroupAlias, msg)
+	} else {
+		id, parseErr := uuid.Parse(strings.TrimSpace(req.GroupID))
+		if parseErr != nil {
+			writeError(w, http.StatusBadRequest, "group_id must be a UUID")
+			return
+		}
+		ids, err = s.store.EnqueueGroupMessageByID(ctx, id, msg)
+	}
 	switch {
 	case errors.Is(err, storage.ErrNotFound):
 		writeError(w, http.StatusNotFound, "group not found")
@@ -216,7 +229,7 @@ func (s *Server) sendToGroup(w http.ResponseWriter, ctx context.Context, alias s
 // recipientFields считает, сколько полей получателя заполнено в запросе.
 func recipientFields(req sendMessageRequest) int {
 	n := 0
-	for _, field := range []string{req.Token, req.Alias, req.GroupAlias} {
+	for _, field := range []string{req.UserID, req.UserAlias, req.GroupID, req.GroupAlias} {
 		if field != "" {
 			n++
 		}
@@ -410,18 +423,18 @@ func (s *Server) lookup(w http.ResponseWriter, ctx context.Context, telegramID i
 	return s.loaded(w, sub, err)
 }
 
-// findRecipient ищет получателя сообщения по токену или псевдониму.
+// findRecipient ищет получателя сообщения по идентификатору или псевдониму.
 func (s *Server) findRecipient(w http.ResponseWriter, ctx context.Context, req sendMessageRequest) (storage.Subscriber, bool) {
-	if req.Token == "" {
-		sub, err := s.store.SubscriberByAlias(ctx, req.Alias)
+	if req.UserID == "" {
+		sub, err := s.store.SubscriberByAlias(ctx, req.UserAlias)
 		return s.loaded(w, sub, err)
 	}
-	token, err := uuid.Parse(strings.TrimSpace(req.Token))
+	id, err := uuid.Parse(strings.TrimSpace(req.UserID))
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "token must be a UUID")
+		writeError(w, http.StatusBadRequest, "user_id must be a UUID")
 		return storage.Subscriber{}, false
 	}
-	sub, err := s.store.SubscriberByToken(ctx, token)
+	sub, err := s.store.SubscriberByToken(ctx, id)
 	return s.loaded(w, sub, err)
 }
 

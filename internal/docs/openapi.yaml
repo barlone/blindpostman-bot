@@ -9,8 +9,8 @@ info:
   version: "0.1.0"
   description: |
     REST API Telegram-бота алертинга. Служба регистрирует своих пользователей через
-    подписанную ссылку и отправляет им сообщения по токену или псевдониму получателя либо
-    по псевдониму группы.
+    подписанную ссылку и отправляет им сообщения по идентификатору или псевдониму получателя
+    либо группы.
 
     ## Авторизация
 
@@ -71,8 +71,8 @@ paths:
       tags: [messages]
       summary: Поставить сообщение в очередь
       description: |
-        Получатель задаётся ровно одним из полей `token`, `alias` или `group_alias`.
-        Сообщение группе ставится в очередь каждому её активному участнику, неактивные
+        Получатель задаётся ровно одним из полей `user_id`, `user_alias`, `group_id` или
+        `group_alias`. Сообщение группе ставится в очередь каждому её активному участнику, неактивные
         пропускаются. Постановка атомарна: при ошибке не ставится ни одно сообщение.
       operationId: sendMessage
       requestBody:
@@ -82,19 +82,25 @@ paths:
             schema:
               $ref: "#/components/schemas/SendMessageRequest"
             examples:
-              alias:
-                summary: По псевдониму
+              user_id:
+                summary: По идентификатору пользователя
                 value:
-                  alias: ops
+                  user_id: 3fa85f64-5717-4562-b3fc-2c963f66afa6
                   text: "<b>CPU 98%</b> on db-1"
                   parse_mode: HTML
-              token:
-                summary: По токену
+              user_alias:
+                summary: По псевдониму пользователя
                 value:
-                  token: 3fa85f64-5717-4562-b3fc-2c963f66afa6
+                  user_alias: ops
                   text: "<b>CPU 98%</b> on db-1"
                   parse_mode: HTML
-              group:
+              group_id:
+                summary: По идентификатору группы
+                value:
+                  group_id: 7c9e6679-7425-40de-944b-e07fc1f90ae7
+                  text: "<b>CPU 98%</b> on db-1"
+                  parse_mode: HTML
+              group_alias:
                 summary: По псевдониму группы
                 value:
                   group_alias: oncall
@@ -384,18 +390,23 @@ components:
       additionalProperties: false
       required: [text]
       oneOf:
-        - required: [token]
-        - required: [alias]
+        - required: [user_id]
+        - required: [user_alias]
+        - required: [group_id]
         - required: [group_alias]
       properties:
-        token:
+        user_id:
           type: string
           format: uuid
-          description: Токен получателя, колонка `recipients.id`
-        alias:
+          description: Идентификатор пользователя, колонка `recipients.id`. Это значение бот показывает как токен
+        user_alias:
           type: string
-          description: Псевдоним получателя, колонка `recipients.alias`
+          description: Псевдоним пользователя, колонка `recipients.alias`
           example: ops
+        group_id:
+          type: string
+          format: uuid
+          description: Идентификатор группы, колонка `recipient_groups.id`
         group_alias:
           type: string
           description: Псевдоним группы, колонка `recipient_groups.alias`

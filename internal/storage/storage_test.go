@@ -704,9 +704,9 @@ func TestEnqueueGroupMessage(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	group := uuid.New()
+	group, empty := uuid.New(), uuid.New()
 	if _, err := s.pool.Exec(ctx, `INSERT INTO recipient_groups (id, name, alias)
-		VALUES ($1, 'Дежурные', 'oncall'), ($2, 'Пустая', 'nobody')`, group, uuid.New()); err != nil {
+		VALUES ($1, 'Дежурные', 'oncall'), ($2, 'Пустая', 'nobody')`, group, empty); err != nil {
 		t.Fatal(err)
 	}
 	for _, member := range []Subscriber{active, another, blocked} {
@@ -745,5 +745,19 @@ func TestEnqueueGroupMessage(t *testing.T) {
 	}
 	if _, err := s.EnqueueGroupMessage(ctx, "nobody", NewMessage{Text: "x"}); !errors.Is(err, ErrGroupEmpty) {
 		t.Fatalf("group without members: got %v, want ErrGroupEmpty", err)
+	}
+
+	byID, err := s.EnqueueGroupMessageByID(ctx, group, NewMessage{Text: "by id"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(byID) != 2 {
+		t.Fatalf("by id: got %d messages, want one per active member: %v", len(byID), byID)
+	}
+	if _, err := s.EnqueueGroupMessageByID(ctx, uuid.New(), NewMessage{Text: "x"}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("unknown group id: got %v, want ErrNotFound", err)
+	}
+	if _, err := s.EnqueueGroupMessageByID(ctx, empty, NewMessage{Text: "x"}); !errors.Is(err, ErrGroupEmpty) {
+		t.Fatalf("group id without members: got %v, want ErrGroupEmpty", err)
 	}
 }

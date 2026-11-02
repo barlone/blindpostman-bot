@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -51,10 +52,20 @@ func (s *Store) EnqueueMessage(ctx context.Context, m NewMessage) (int64, error)
 	return id, err
 }
 
-// EnqueueGroupMessage ставит сообщение в очередь каждому активному участнику группы и возвращает
-// ID сообщений; поле SubscriberID не используется. Всё делает один запрос: при сбое не ставится ни
-// одно сообщение, поэтому повтор запроса службой не даст дублей части участников.
+// EnqueueGroupMessage ставит сообщение в очередь каждому активному участнику группы с псевдонимом
+// alias и возвращает ID сообщений; поле SubscriberID не используется. Всё делает один запрос: при
+// сбое не ставится ни одно сообщение, поэтому повтор запроса службой не даст дублей части участников.
 func (s *Store) EnqueueGroupMessage(ctx context.Context, alias string, m NewMessage) ([]int64, error) {
+	return s.enqueueGroup(ctx, "alias = $1", alias, m)
+}
+
+// EnqueueGroupMessageByID делает то же, что EnqueueGroupMessage, для группы с идентификатором id.
+func (s *Store) EnqueueGroupMessageByID(ctx context.Context, id uuid.UUID, m NewMessage) ([]int64, error) {
+	return s.enqueueGroup(ctx, "id = $1", id, m)
+}
+
+// enqueueGroup находит группу по условию condition с параметром key.
+func (s *Store) enqueueGroup(ctx context.Context, condition string, key any, m NewMessage) ([]int64, error) {
 	var expires *time.Time
 	if !m.ExpiresAt.IsZero() {
 		expires = &m.ExpiresAt
@@ -64,7 +75,7 @@ func (s *Store) EnqueueGroupMessage(ctx context.Context, alias string, m NewMess
 	// Типы параметров заданы явно: в INSERT ... SELECT их нельзя вывести из колонок.
 	err := s.pool.QueryRow(ctx, `
 		WITH target AS (
-			SELECT id FROM recipient_groups WHERE alias = $1
+			SELECT id FROM recipient_groups WHERE `+condition+`
 		), queued AS (
 			INSERT INTO messages (subscriber_id, text, parse_mode, disable_notification, expires_at, status)
 			SELECT r.internal_id, $2::text, $3::text, $4::boolean, $5::timestamptz, 'pending'
@@ -77,7 +88,7 @@ func (s *Store) EnqueueGroupMessage(ctx context.Context, alias string, m NewMess
 		)
 		SELECT EXISTS (SELECT 1 FROM target),
 		       COALESCE((SELECT array_agg(id ORDER BY id) FROM queued), '{}'::bigint[])`,
-		alias, m.Text, m.ParseMode, m.DisableNotification, expires).Scan(&found, &ids)
+		key, m.Text, m.ParseMode, m.DisableNotification, expires).Scan(&found, &ids)
 	switch {
 	case err != nil:
 		return nil, err

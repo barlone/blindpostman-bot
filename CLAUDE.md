@@ -3,7 +3,7 @@
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 Telegram alerting bot in Go. Services register their users through a signed `/start` link and send
-them messages by recipient token or alias over a REST API. Data lives in PostgreSQL. [README.md](README.md) covers
+them messages by user or group id or alias over a REST API. Data lives in PostgreSQL. [README.md](README.md) covers
 the registration flow, the API and the queue; [deploy/DEPLOY.md](deploy/DEPLOY.md) covers production.
 
 Code comments, docs, the OpenAPI spec and bot texts are in Russian. Log messages and API error
@@ -43,9 +43,10 @@ use fakes.
 
 ### Message path
 
-`POST /api/v1/messages` inserts into `messages` and answers `202`. With `group_alias` it inserts one row
-per active group member in a single statement (`EnqueueGroupMessage`), so a retry cannot double part of
-the group. A database trigger sends `NOTIFY`,
+`POST /api/v1/messages` inserts into `messages` and answers `202`. The recipient is exactly one of
+`user_id`, `user_alias`, `group_id` or `group_alias`. For a group it inserts one row per active member
+in a single statement (`enqueueGroup`), so a retry cannot double part of the group. A database trigger
+sends `NOTIFY`,
 the dispatcher wakes up and claims rows; polling (`queue_poll_interval`) picks up retries. Things to
 keep true when changing `internal/storage/queue.go` or `internal/delivery`:
 
@@ -73,8 +74,9 @@ that know the shared secret; a row can also be inserted by hand, so never make t
 The Go type `Subscriber`, the `subscriber_id` columns and the `/api/v1/subscribers` paths all refer to
 this table.
 
-In `recipients`, `id` is the UUID token (`Subscriber.Token`, `token` in the API), and `internal_id` is the
-bigint primary key that the `subscriber_id` columns reference (`Subscriber.ID`). Groups reference `id`.
+In `recipients`, `id` is the UUID token (`Subscriber.Token`; `user_id` in `POST /api/v1/messages`, `token`
+in the other API methods), and `internal_id` is the bigint primary key that the `subscriber_id` columns
+reference (`Subscriber.ID`). Groups reference `id`.
 
 `[telegram] developer_id` names one user the bot makes exceptions for. For now that means a plain
 `/start` adds them to `recipients` without a link; new exceptions should check `Service.developerID`.
